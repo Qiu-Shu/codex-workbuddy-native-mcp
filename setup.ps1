@@ -1,0 +1,31 @@
+[CmdletBinding()]
+param(
+    [string]$SessionId,
+    [string]$Python = 'python',
+    [string]$Model = 'auto',
+    [switch]$Register
+)
+$ErrorActionPreference = 'Stop'
+if ($Register -and -not $SessionId) { throw '-Register requires -SessionId' }
+$venvPython = Join-Path $PSScriptRoot '.venv/Scripts/python.exe'
+if (-not (Test-Path -LiteralPath $venvPython)) {
+    & $Python -c 'import sys; assert sys.version_info >= (3,11), "Python 3.11+ required"'
+    if ($LASTEXITCODE -ne 0) { throw 'Install Python 3.11+ or pass -Python with its absolute executable path' }
+    & $Python -m venv (Join-Path $PSScriptRoot '.venv')
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to create Python environment' }
+}
+& $venvPython -m pip install -r (Join-Path $PSScriptRoot 'requirements.txt')
+if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+$configArgs = @((Join-Path $PSScriptRoot 'configure.py'))
+if ($SessionId) {
+    $configArgs += @('--session-id', $SessionId, '--model', $Model)
+    if ($Register) { $configArgs += '--register' }
+} else {
+    $configArgs += '--list'
+}
+& $venvPython @configArgs
+if ($LASTEXITCODE -ne 0) { throw 'Configuration failed; see the message above' }
+if (-not $SessionId) {
+    Write-Host 'Choose a dedicated chat from the list, then run:'
+    Write-Host '.\setup.ps1 -SessionId <UUID> -Register'
+}

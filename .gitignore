@@ -1,0 +1,10 @@
+.venv/
+.codegraph/
+__pycache__/
+*.pyc
+work/
+desktop_session.json
+desktop_session.backup.json
+*.bak
+.env
+.env.*
