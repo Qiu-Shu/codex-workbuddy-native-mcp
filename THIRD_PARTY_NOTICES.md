@@ -11,6 +11,8 @@ Local adaptations include closing temporary ACP discovery connections, support f
 
 The local adapter adds per-connection `session/load` for WorkBuddy 5.8.2, scoped permission responses, serialized access to a dedicated native chat, cancellation and uncertain-submission checks. Portable configuration and installation are in `configure.py` and `setup.ps1`.
 
+Version 0.1.1 uses TCP-only status discovery, retries only an explicit pre-prompt writer-occupied rejection with the client's `takeWriter` metadata after a fresh idle check, and reports ACP connection cleanup HTTP failures. It never retries an uncertain prompt or bypasses snapshot authentication.
+
 Runtime dependencies are installed from `requirements.txt`: httpx 0.28.1 and mcp 1.30.0. They and their transitive dependencies retain their own licenses; their binaries and virtual environments are not bundled.
 
 WorkBuddy and Codex are products of their respective owners. This project is a community integration and is not represented as an official integration.

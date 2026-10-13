@@ -4,6 +4,7 @@ import concurrent.futures
 import contextlib
 import json
 import msvcrt
+import socket
 import sys
 import threading
 import uuid
@@ -15,7 +16,7 @@ sys.path.insert(0, str(ROOT / 'vendor' / 'desktop-bridge'))
 sys.path.insert(0, str(ROOT / 'vendor' / 'live-bridge'))
 import acp_live_send as live
 from mcp.server.fastmcp import FastMCP
-from workbuddy_bridge.acp import AcpClient, DesktopServer
+from workbuddy_bridge.acp import AcpClient, DesktopServer, WorkBuddyError
 from workbuddy_bridge.activity_log import _tool_name
 
 mcp = FastMCP('workbuddy', instructions=(
@@ -77,12 +78,15 @@ def discover_native_server(activate=False):
     if not binding.is_file():
         raise RuntimeError('Not configured: run setup.ps1 and bind an existing native chat on this computer')
     sid = str(uuid.UUID(json.loads(binding.read_text(encoding='utf-8'))['session_id']))
-    found = live.find_live_endpoint(session_id=sid)
+    # Discovery/status must not allocate a competing ACP connection.
+    found = live.find_live_endpoint(session_id=sid, probe=False)
     if not found:
         raise RuntimeError('Dedicated native chat has no live endpoint. Open it in WorkBuddy: ' + sid)
     port, actual_sid, native_cwd = found
     if actual_sid != sid or not native_cwd:
         raise RuntimeError('Native endpoint identity mismatch')
+    with socket.create_connection(('127.0.0.1', port), timeout=3):
+        pass
     state = native_turn_state(native_cwd, sid)
     if state['state'] != 'idle':
         raise RuntimeError('Dedicated native chat is busy or its state is unknown: ' + state['state'])
@@ -166,9 +170,28 @@ def run_task(task, prompt, cwd, timeout_seconds):
     task.setdefault('control_lock', threading.Lock())
     try:
         with native_session_lock():
-            return _run_native_task(task, prompt, cwd, timeout_seconds)
+            result = _run_native_task(task, prompt, cwd, timeout_seconds)
+            if task.get('cleanup_error'):
+                result['connection_cleanup_error'] = task['cleanup_error']
+            return result
     except Exception as exc:
         return {'state': 'failed', 'error': str(exc)}
+
+
+def load_native_writer(client, sid, native_cwd):
+    params = {'sessionId': sid, 'cwd': native_cwd, 'mcpServers': []}
+    try:
+        return client.request('session/load', params, timeout_seconds=30)
+    except WorkBuddyError as exc:
+        if str(exc) != 'Persistent Session already has an external writer':
+            raise
+    # Only a known pre-prompt rejection permits another load. Never retry a prompt.
+    # Caller holds the cross-process lock; the dedicated chat must not be used manually.
+    state = native_turn_state(native_cwd, sid)['state']
+    if state != 'idle':
+        raise RuntimeError('Cannot take over native writer: session is ' + state)
+    params['_meta'] = {'codebuddy.ai/takeWriter': True}
+    return client.request('session/load', params, timeout_seconds=30)
 
 
 def _run_native_task(task, prompt, cwd, timeout_seconds):
@@ -183,8 +206,7 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
         task['client'] = client
         client.connect()
         # WorkBuddy 5.8.2 requires session/load on each fresh connection before prompt.
-        client.request('session/load', {'sessionId': sid, 'cwd': native_cwd, 'mcpServers': []},
-                       timeout_seconds=30)
+        load_native_writer(client, sid, native_cwd)
         client.session_id = sid
         config = json.loads((ROOT / 'desktop_session.json').read_text(encoding='utf-8'))
         client.configure_session(permission_mode='default', model=config.get('model', ''))
@@ -241,7 +263,10 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
         with task['control_lock']:
             task['client'] = None
             if client:
-                client.close()
+                try:
+                    client.close()
+                except Exception as exc:
+                    task['cleanup_error'] = str(exc)
 
 
 @mcp.tool()
@@ -250,6 +275,7 @@ async def workbuddy_status() -> dict:
     try:
         server, sid, native_cwd = await asyncio.to_thread(discover_native_server)
         return {'connected': True, 'endpoint': server.acp_endpoint, 'concurrency': 1,
+                'connection_check': 'TCP reachable; native transcript idle; writer not acquired',
                 'session_id': sid, 'native_history': True, 'native_cwd': native_cwd,
                 'permissions': 'default mode; scoped allow_once responses; not an OS sandbox'}
     except Exception as exc:

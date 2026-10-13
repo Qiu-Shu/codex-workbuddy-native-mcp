@@ -1,6 +1,6 @@
 # Codex WorkBuddy Native MCP
 
-Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkBuddy，并把对话保留在 WorkBuddy 的一个专用原生会话中。版本：0.1.0。
+Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkBuddy，并把对话保留在 WorkBuddy 的一个专用原生会话中。版本：0.1.1。
 
 运行方式是 stdio MCP → 本机 WorkBuddy ACP；不模拟键盘、鼠标，不调用 Computer Use。
 
@@ -33,7 +33,7 @@ Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkB
 
    脚本创建本目录 `.venv` 和 `desktop_session.json`，并向 `$CODEX_HOME/config.toml`（未设置时为用户目录下 `.codex/config.toml`）追加 `mcp_servers.workbuddy`。已有配置会先备份；若同名 MCP 已存在，脚本会停止，不覆盖它。只绑定会话时省略 `-Register`。
 
-5. 重启 Codex 或重新加载 MCP，然后让 Codex 调用 `workbuddy_status`。`connected: true` 才表示当前原生会话可用，注册成功本身不能证明连接成功。
+5. 重启 Codex 或重新加载 MCP，然后让 Codex 调用 `workbuddy_status`。`connected: true` 表示发现了可连接的本机端口，且原生记录显示空闲；它不获取写入权，不能代替实际任务验收。注册成功本身也不能证明连接成功。
 
 这些命令的 ExecutionPolicy Bypass 只作用于该 PowerShell 进程，不修改系统执行策略。安装不需要管理员权限。
 
@@ -58,6 +58,8 @@ Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkB
 
 - 必须先登录并打开专用会话。此版本不会自动操作界面、激活会话或创建新原生会话。客户端重启或回收工作进程后，需要手动重新打开会话。
 - 原生会话保留历史。委派期间不要在它里面手动发送消息；不同敏感项目应使用不同会话，重新绑定前等任务结束。
+- 0.1.1 修复 `Persistent Session already has an external writer`：仅当首次 `session/load` 明确返回这一占用错误、且再次读取专用聊天记录确认空闲时，使用客户端的 `takeWriter` 接口重新加载一次。此操作会断开旧写入连接，包括桌面端的活动连接；不结束 WorkBuddy 进程、不操作界面。忙碌、未知状态、超时或其他错误不会触发接管或自动重发任务。检查和接管不是客户端提供的原子操作，专用聊天在委派期间不得被其他人或软件同时使用。
+- 状态检查仅探测 TCP，不创建 ACP 连接。任务结束时检查连接释放响应；失败会返回 `connection_cleanup_error`，此时先确认原任务结果，不能盲目重发。客户端的独立只读快照 HTTP 接口可能要求额外认证并返回 401；本包不绕过认证，也不把它当成写入权检测。
 - 桥接器对收到的权限请求只允许任务目录内的 Read / Write / Edit 和 WebSearch / WebFetch，其他请求拒绝。它不是操作系统沙箱，无法约束 WorkBuddy 已自行批准且不再向桥接器询问的操作；请勿使用跳过权限检查模式，并独立核对结果。
 - 超时、连接断开或结果不明时，不要自动重试。先检查专用会话和目标文件，确认上一轮是否已经执行。`work/native-active.json` 用于阻止不明状态下再次提交；不要在任务仍运行时删除它。
 - 模型默认 `auto`，可用安装参数 `-Model` 更改。限流、排队及积分消耗由 WorkBuddy 控制；桥接成功不代表拥有额外模型额度。
@@ -69,7 +71,7 @@ Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkB
 安装依赖后运行本地测试，不发送 WorkBuddy 任务：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest test_configure test_local_bridge test_compat
+.\.venv\Scripts\python.exe -m unittest test_configure test_local_bridge test_compat test_writer
 $env:PYTHONPATH = (Resolve-Path .\vendor\desktop-bridge).Path
 .\.venv\Scripts\python.exe -m unittest discover -s vendor/desktop-bridge/workbuddy_bridge -p 'test_*.py'
 ```
