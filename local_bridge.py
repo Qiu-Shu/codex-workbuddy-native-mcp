@@ -10,6 +10,7 @@ import threading
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
+import native_runtime
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'vendor' / 'desktop-bridge'))
@@ -24,6 +25,7 @@ mcp = FastMCP('workbuddy', instructions=(
     'Use start then wait. Web search/fetch and file Read/Write/Edit approvals within cwd are supported. '
     'Other permission requests are denied and reported. This is not an OS sandbox. '
     'Verify outputs independently. WorkBuddy must be running and logged in. '
+    'If status reports can_attempt_recovery, start may restore the bound chat through local sidecar IPC. '
     'Tasks use one dedicated native chat with persistent shared history. Do not use that chat manually '
     'while a delegated task runs. Never retry a failed or timed-out task automatically. '
     'Use absolute file paths. No desktop typing is needed.'), log_level='WARNING')
@@ -33,6 +35,10 @@ tasks = {}
 lock = threading.Lock()
 NATIVE_LOCK_PATH = ROOT / 'work/native-session.lock'
 ACTIVE_PATH = ROOT / 'work/native-active.json'
+
+
+class NativeRuntimeDormant(RuntimeError):
+    pass
 
 
 def parse_native_turn(rows):
@@ -80,13 +86,14 @@ def discover_native_server(activate=False):
     sid = str(uuid.UUID(json.loads(binding.read_text(encoding='utf-8'))['session_id']))
     # Discovery/status must not allocate a competing ACP connection.
     found = live.find_live_endpoint(session_id=sid, probe=False)
-    if not found:
-        raise RuntimeError('Dedicated native chat has no live endpoint. Open it in WorkBuddy: ' + sid)
-    port, actual_sid, native_cwd = found
-    if actual_sid != sid or not native_cwd:
-        raise RuntimeError('Native endpoint identity mismatch')
-    with socket.create_connection(('127.0.0.1', port), timeout=3):
-        pass
+    if found:
+        port, actual_sid, native_cwd = found
+        if actual_sid != sid or not native_cwd:
+            raise RuntimeError('Native endpoint identity mismatch')
+        endpoint = f'http://127.0.0.1:{port}/api/v1/acp'
+    else:
+        native_cwd = native_runtime.session_cwd(sid)
+        endpoint = None
     state = native_turn_state(native_cwd, sid)
     if state['state'] != 'idle':
         raise RuntimeError('Dedicated native chat is busy or its state is unknown: ' + state['state'])
@@ -94,7 +101,13 @@ def discover_native_server(activate=False):
         active = json.loads(ACTIVE_PATH.read_text(encoding='utf-8'))
         if active['session_id'] != sid or not state['user_text'].startswith('[' + active['task_id'] + ']'):
             raise RuntimeError('Previous submission outcome is uncertain; inspect native chat before retrying')
-    return DesktopServer(f'http://127.0.0.1:{port}/api/v1/acp', '', sid, '', 0), sid, native_cwd
+    if endpoint is None:
+        endpoint = native_runtime.resolve_runtime(sid, native_cwd, create=activate)
+        if endpoint is None:
+            raise NativeRuntimeDormant('Native runtime is dormant; workbuddy_start can attempt local sidecar recovery')
+    with socket.create_connection(('127.0.0.1', urlsplit(endpoint).port), timeout=3):
+        pass
+    return DesktopServer(endpoint, '', sid, '', 0), sid, native_cwd
 
 
 @contextlib.contextmanager
@@ -200,7 +213,7 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
     try:
         if task['cancel'].is_set():
             return {'state': 'cancelled'}
-        server, sid, native_cwd = discover_native_server()
+        server, sid, native_cwd = discover_native_server(activate=True)
         client = ScopedClient(server, cwd, timeout_seconds=timeout_seconds)
         client.native_cwd = native_cwd
         task['client'] = client
@@ -278,8 +291,10 @@ async def workbuddy_status() -> dict:
                 'connection_check': 'TCP reachable; native transcript idle; writer not acquired',
                 'session_id': sid, 'native_history': True, 'native_cwd': native_cwd,
                 'permissions': 'default mode; scoped allow_once responses; not an OS sandbox'}
+    except NativeRuntimeDormant as exc:
+        return {'connected': False, 'can_attempt_recovery': True, 'error': str(exc)}
     except Exception as exc:
-        return {'connected': False, 'error': str(exc)}
+        return {'connected': False, 'can_attempt_recovery': False, 'error': str(exc)}
 
 
 @mcp.tool()

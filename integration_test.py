@@ -41,7 +41,7 @@ async def main():
             report['tools'] = [t.name for t in (await session.list_tools()).tools]
             report['connection'] = payload(await session.call_tool('workbuddy_status', {}))
             print(json.dumps({'tools': report['tools'], 'connection': report['connection']}), flush=True)
-            assert report['connection']['connected']
+            assert report['connection']['connected'] or report['connection'].get('can_attempt_recovery')
             async def run(prompt):
                 start = payload(await session.call_tool('workbuddy_start', {
                     'prompt': prompt, 'cwd': str(folder), 'timeout_seconds': 240}))
