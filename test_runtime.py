@@ -93,28 +93,44 @@ class RuntimeTest(unittest.TestCase):
                 self.assertEqual(runtime.resolve_runtime(SID, str(self.cwd), create=create), host['acpEndpoint'])
                 self.assertEqual([call.args[1] for call in rpc.call_args_list], ['session.list', 'session.list'])
 
-    def test_missing_endpoint_is_restored_before_task_but_busy_chat_is_not(self):
+    def test_missing_desktop_is_not_replaced_and_busy_chat_is_rejected(self):
         (self.root / 'desktop_session.json').write_text(json.dumps({'session_id': SID}))
         for state in ['idle', 'busy']:
             with (
                 self.subTest(state=state),
                 patch.object(bridge, 'ROOT', self.root),
                 patch.object(bridge, 'ACTIVE_PATH', self.root / 'active.json'),
-                patch.object(bridge.live, 'find_live_endpoint', return_value=None),
+                patch.object(bridge.live, 'list_interactive_sessions', return_value=[]),
+                patch.object(runtime, 'owned_endpoints', return_value=set()),
                 patch.object(runtime, 'session_cwd', return_value=str(self.cwd)),
                 patch.object(runtime, 'resolve_runtime', return_value='http://127.0.0.1:54321/api/v1/acp') as resolve,
                 patch.object(bridge, 'native_turn_state', return_value={'state': state}),
                 patch.object(bridge.socket, 'create_connection'),
             ):
                 if state == 'idle':
-                    server, sid, cwd = bridge.discover_native_server(activate=True)
-                    self.assertEqual(server.acp_endpoint, 'http://127.0.0.1:54321/api/v1/acp')
-                    self.assertEqual(sid, SID)
-                    resolve.assert_called_once_with(SID, str(self.cwd), create=True)
+                    with self.assertRaises(bridge.NativeRuntimeDormant):
+                        bridge.discover_native_server(activate=True)
+                    resolve.assert_not_called()
                 else:
                     with self.assertRaisesRegex(RuntimeError, 'busy'):
                         bridge.discover_native_server(activate=True)
                     resolve.assert_not_called()
+
+    def test_owned_worker_identification_is_readonly_and_checks_all_sidecars(self):
+        host = {'sessionId': 'codex-native-' + SID, 'pid': 99,
+                'acpEndpoint': 'http://127.0.0.1:54321/api/v1/acp'}
+        with (patch.object(runtime, 'rpc', side_effect=[[], [host]]) as rpc,
+              patch.object(runtime, '_candidate_sidecars', return_value=[('a', 'pipe1', 10), ('b', 'pipe2', 20)]),
+              patch.object(runtime, '_process_executable', return_value=self.exe)):
+            self.assertEqual(runtime.owned_endpoints(SID), {host['acpEndpoint']})
+            self.assertEqual([c.args[1] for c in rpc.call_args_list], ['session.list', 'session.list'])
+
+    def test_unreadable_sidecar_does_not_misidentify_its_worker(self):
+        with (patch.object(runtime, 'rpc', side_effect=RuntimeError('sidecar unavailable')),
+              patch.object(runtime, '_candidate_sidecars', return_value=[('a', 'pipe1', 10)]),
+              patch.object(runtime, '_process_executable', return_value=self.exe)):
+            with self.assertRaisesRegex(RuntimeError, 'sidecar unavailable'):
+                runtime.owned_endpoints(SID)
 
 
 if __name__ == '__main__':

@@ -12,9 +12,9 @@ from workbuddy_bridge.acp import AcpClient, DesktopServer, WorkBuddyError
 
 
 class WriterTest(unittest.TestCase):
-    def test_second_load_failure_stops_and_unknown_states_never_take_over(self):
+    def test_writer_conflicts_stop_in_all_transcript_states(self):
         occupied = WorkBuddyError('Persistent Session already has an external writer')
-        for state, expected_calls in [('idle', 2), ('unknown', 1), ('busy', 1)]:
+        for state, expected_calls in [('idle', 1), ('unknown', 1), ('busy', 1)]:
             with self.subTest(state=state):
                 client = MagicMock()
                 client.request.side_effect = occupied
@@ -31,7 +31,7 @@ class WriterTest(unittest.TestCase):
         client.request.side_effect = occupied
         client.request.reset_mock()
         with patch.object(bridge, 'native_turn_state', side_effect=OSError('unreadable')):
-            with self.assertRaises(OSError):
+            with self.assertRaises(WorkBuddyError):
                 bridge.load_native_writer(client, 'sid', 'D:/native')
         self.assertEqual(client.request.call_count, 1)
 
@@ -55,7 +55,7 @@ class WriterTest(unittest.TestCase):
             self.assertEqual(result['connection_cleanup_error'], 'cleanup failed')
             client.prompt.assert_called_once()
 
-    def test_occupied_idle_session_is_loaded_with_explicit_takeover(self):
+    def test_occupied_idle_session_never_uses_explicit_takeover(self):
         client = MagicMock()
         def load(method, params, **kwargs):
             if not params.get('_meta', {}).get('codebuddy.ai/takeWriter'):
@@ -63,15 +63,16 @@ class WriterTest(unittest.TestCase):
             return {}
         client.request.side_effect = load
         with patch.object(bridge, 'native_turn_state', return_value={'state': 'idle'}):
-            bridge.load_native_writer(client, 'sid', 'D:/native')
-        self.assertEqual(client.request.call_count, 2)
+            with self.assertRaises(WorkBuddyError):
+                bridge.load_native_writer(client, 'sid', 'D:/native')
+        self.assertEqual(client.request.call_count, 1)
         client.prompt.assert_not_called()
 
     def test_busy_session_is_never_taken_over(self):
         client = MagicMock()
         client.request.side_effect = WorkBuddyError('Persistent Session already has an external writer')
         with patch.object(bridge, 'native_turn_state', return_value={'state': 'busy'}):
-            with self.assertRaisesRegex(RuntimeError, 'busy'):
+            with self.assertRaises(WorkBuddyError):
                 bridge.load_native_writer(client, 'sid', 'D:/native')
         self.assertEqual(client.request.call_count, 1)
 
@@ -87,12 +88,14 @@ class WriterTest(unittest.TestCase):
             listener.bind(('127.0.0.1', 0)); listener.listen()
             root = Path(directory)
             (root / 'desktop_session.json').write_text(json.dumps({'session_id': '11111111-1111-4111-8111-111111111111'}))
-            def find(*, session_id, probe=True):
+            def find(*, probe=True):
                 self.assertFalse(probe, 'status must not allocate an ACP connection')
-                return listener.getsockname()[1], session_id, 'D:/native'
+                return [{'port': listener.getsockname()[1], 'sessionId': '11111111-1111-4111-8111-111111111111', 'cwd': 'D:/native'}]
             with (patch.object(bridge, 'ROOT', root),
                   patch.object(bridge, 'ACTIVE_PATH', root / 'active.json'),
-                  patch.object(bridge.live, 'find_live_endpoint', side_effect=find),
+                  patch.object(bridge.live, 'list_interactive_sessions', side_effect=find),
+                  patch.object(bridge.native_runtime, 'session_cwd', return_value='D:/native'),
+                  patch.object(bridge.native_runtime, 'owned_endpoints', return_value=set()),
                   patch.object(bridge, 'native_turn_state', return_value={'state': 'idle'})):
                 bridge.discover_native_server()
 

@@ -49,6 +49,25 @@ def validate_endpoint(endpoint):
     return endpoint
 
 
+def owned_endpoints(sid):
+    """Identify legacy bridge workers so they cannot shadow the desktop worker."""
+    runtime_id = 'codex-native-' + str(uuid.UUID(sid))
+    endpoints = set()
+    for _, pipe, sidecar_pid in _candidate_sidecars():
+        exe = _process_executable(sidecar_pid)
+        if exe.name.casefold() != 'workbuddy.exe':
+            continue
+        # Fail closed when a live sidecar cannot be inspected. Otherwise its
+        # hidden worker might be mistaken for the desktop's native runtime.
+        for host in rpc(pipe, 'session.list') or []:
+            if host.get('sessionId') != runtime_id:
+                continue
+            if _process_executable(int(host['pid'])) != exe:
+                raise RuntimeError('Recovered runtime executable does not match WorkBuddy')
+            endpoints.add(validate_endpoint(host['acpEndpoint']))
+    return endpoints
+
+
 def resolve_runtime(sid, cwd, *, create=False):
     sid = str(uuid.UUID(sid))
     runtime_id = 'codex-native-' + sid
