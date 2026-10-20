@@ -1,5 +1,6 @@
 """Bind one existing local WorkBuddy chat and optionally register the stdio MCP."""
 import argparse
+from contextlib import closing
 from datetime import datetime
 import json
 import os
@@ -20,7 +21,7 @@ def register_mcp(config_path, root, executable):
         raise ValueError('mcp_servers.workbuddy already exists; review it manually before replacing it')
     quote = lambda value: json.dumps(str(value), ensure_ascii=False)
     addition = ('\n[mcp_servers.workbuddy]\ncommand = ' + quote(Path(executable).resolve())
-                + '\nargs = [' + quote(Path(root).resolve() / 'local_bridge.py') + ']\n'
+                + '\nargs = [' + quote(Path(root).resolve() / 'catalog_mcp.py') + ']\n'
                 + 'env = { PYTHONIOENCODING = "utf-8" }\n')
     tomllib.loads(original + addition)
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -40,7 +41,9 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--list', action='store_true', help='List 30 recent native chat IDs/titles; no message bodies')
     mode.add_argument('--session-id', help='UUID of an existing chat on THIS computer')
-    parser.add_argument('--model', default='auto')
+    parser.add_argument('--model', default='', help='Optional model override; default keeps the WorkBuddy selection')
+    parser.add_argument('--take-writer', action='store_true',
+                        help='Allow native writer handoff for this dedicated idle chat')
     parser.add_argument('--register', action='store_true', help='Append global Codex MCP config, backing up any existing config')
     args = parser.parse_args()
     if sys.platform != 'win32':
@@ -50,7 +53,7 @@ def main():
     database = Path.home() / '.workbuddy/workbuddy.db'
     if not database.is_file():
         parser.error('WorkBuddy database missing. Install and sign in to WorkBuddy first.')
-    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
+    with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as db:
         if args.list:
             rows = db.execute('SELECT id,COALESCE(custom_title,title),cwd FROM sessions '
                               'WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 30').fetchall()
@@ -68,7 +71,8 @@ def main():
     binding = ROOT / 'desktop_session.json'
     if binding.exists():
         binding.with_name('desktop_session.backup.json').write_bytes(binding.read_bytes())
-    binding.write_text(json.dumps({'session_id': sid, 'model': args.model}, indent=2), encoding='utf-8')
+    binding.write_text(json.dumps({'session_id': sid, 'model': args.model,
+                                   'take_writer': args.take_writer}, indent=2), encoding='utf-8')
     print('Bound existing chat: ' + sid)
     print('Restart/reload Codex MCP. Keep WorkBuddy signed in and the selected chat active.')
 

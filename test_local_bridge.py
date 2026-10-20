@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import inspect
 import threading
+import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import local_bridge
@@ -12,6 +13,23 @@ from local_bridge import permitted, tasks, workbuddy_wait
 
 
 class LifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def test_status_identifies_loaded_revision_even_when_busy(self):
+        with patch.object(local_bridge, 'discover_native_server', side_effect=RuntimeError('busy')):
+            result = await local_bridge.workbuddy_status()
+        self.assertFalse(result['connected'])
+        self.assertTrue(result.get('bridge_revision'))
+        self.assertTrue(result.get('process_id'))
+
+    async def test_updated_source_rejects_old_worker_before_native_access(self):
+        with (patch.object(local_bridge, 'SOURCE_SHA256', 'old-code', create=True),
+              patch.object(local_bridge, 'discover_native_server') as discover):
+            result = await local_bridge.workbuddy_status()
+            self.assertFalse(result['connected'])
+            self.assertEqual(result.get('error_code'), 'bridge_update_required')
+            with self.assertRaisesRegex(RuntimeError, 'reload'):
+                local_bridge.workbuddy_start('new task', str(Path.cwd()))
+            discover.assert_not_called()
+
     async def test_wait_does_not_block_other_mcp_requests(self):
         future = concurrent.futures.Future()
         tasks['test-task'] = {'future': future, 'session_id': None}
@@ -56,12 +74,10 @@ class PermissionsTest(unittest.TestCase):
 
 class NativeSessionTest(unittest.TestCase):
     def setUp(self):
-        desktop = patch.object(local_bridge, 'desktop_turn_state', return_value='idle')
-        desktop.start()
-        self.addCleanup(desktop.stop)
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
-        for key, filename in [('NATIVE_LOCK_PATH', 'lock'), ('ACTIVE_PATH', 'active.json')]:
+        for key, filename in [('NATIVE_LOCK_PATH', 'lock'), ('ACTIVE_PATH', 'active.json'),
+                              ('TERMINAL_PATH', 'terminal.json')]:
             patcher = patch.object(local_bridge, key, Path(self.folder.name) / filename, create=True)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -77,6 +93,7 @@ class NativeSessionTest(unittest.TestCase):
         rows = [{'type': 'message', 'role': 'user', 'content': [{'type': 'text', 'text': '[wb-test] task'}]},
                 {'type': 'function_call_result', 'status': 'completed'}]
         self.assertEqual(parser(rows)['state'], 'busy')
+
         rows.append({'type': 'message', 'role': 'assistant', 'status': 'incomplete',
                      'providerData': {'error': {'message': '429 queued'}}})
         self.assertEqual(parser(rows)['state'], 'idle')
@@ -84,6 +101,32 @@ class NativeSessionTest(unittest.TestCase):
         rows.append({'type': 'function_call', 'status': 'in_progress'})
         self.assertEqual(parser(rows)['state'], 'busy')
 
+    def test_cancelled_turn_receipt_clears_busy_only_for_exact_history(self):
+        transcript = Path(self.folder.name) / 'history.jsonl'
+        rows = [{'type': 'message', 'role': 'user', 'content': [{'type': 'text', 'text': '[wb-cancel] task'}]},
+                {'type': 'function_call', 'name': 'Glob'},
+                {'type': 'function_call_result', 'status': 'completed'}]
+        transcript.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+        with patch.object(local_bridge.live, '_transcript_path', return_value=str(transcript)):
+            self.assertEqual(local_bridge.native_turn_state(self.folder.name, 'sid')['state'], 'busy')
+            local_bridge.record_terminal_turn(self.folder.name, 'sid', 'wb-cancel', 'cancelled')
+            self.assertEqual(local_bridge.native_turn_state(self.folder.name, 'sid')['state'], 'idle')
+            self.assertEqual(local_bridge.native_turn_state(self.folder.name, 'other-sid')['state'], 'busy')
+            # A later tool event or new prompt must invalidate the old receipt.
+            with transcript.open('a', encoding='utf-8') as handle:
+                handle.write(json.dumps({'type': 'function_call', 'name': 'Read'}) + '\n')
+            self.assertEqual(local_bridge.native_turn_state(self.folder.name, 'sid')['state'], 'busy')
+
+    def test_unconfirmed_or_wrong_task_cannot_record_terminal_turn(self):
+        transcript = Path(self.folder.name) / 'history.jsonl'
+        transcript.write_text(json.dumps({'type': 'message', 'role': 'user',
+            'content': [{'type': 'text', 'text': '[wb-current] task'}]}) + '\n', encoding='utf-8')
+        with patch.object(local_bridge.live, '_transcript_path', return_value=str(transcript)):
+            self.assertFalse(local_bridge.record_terminal_turn(self.folder.name, 'sid', 'wb-current', 'timeout'))
+            self.assertFalse(local_bridge.record_terminal_turn(self.folder.name, 'sid', 'wb-old', 'cancelled'))
+            self.assertFalse(local_bridge.TERMINAL_PATH.exists())
+            local_bridge.TERMINAL_PATH.write_bytes(b'\0' * 84)
+            self.assertEqual(local_bridge.native_turn_state(self.folder.name, 'sid')['state'], 'busy')
     def test_file_lock_rejects_second_owner_and_releases(self):
         with local_bridge.native_session_lock():
             with self.assertRaisesRegex(RuntimeError, 'Another MCP process'):
@@ -105,6 +148,74 @@ class NativeSessionTest(unittest.TestCase):
         self.assertFalse(client.permissions[-1]['allowed'])
         self.assertEqual(client._http.post.call_args.kwargs['json']['result'],
                          {'outcome': {'outcome': 'cancelled'}})
+
+    def test_denied_permission_cancels_prompt_stream_once(self):
+        client = local_bridge.ScopedClient(MagicMock(), Path(self.folder.name))
+        client.session_id = 'sid'
+        client._http.close()
+        client._http = MagicMock()
+        event = {'id': 9, 'params': {'toolCall': {'title': 'Grep', 'rawInput': {}},
+                 'options': [{'kind': 'allow_once', 'optionId': 'yes'}]}}
+        with (patch.object(client, '_headers', return_value={}),
+              patch.object(client, 'notify') as notify):
+            client._grant_permission(event)
+            client._grant_permission({**event, 'id': 10})
+            notify.assert_not_called()
+            client.event_callback({'params': {'sessionId': 'other', 'update': {'sessionUpdate': 'session_info_update',
+                '_meta': {'codebuddy.ai/agentPhase': {'phase': 'idle'}}}}})
+            notify.assert_not_called()
+            client.event_callback({'params': {'sessionId': 'sid', 'update': {'sessionUpdate': 'session_info_update',
+                '_meta': {'codebuddy.ai/agentPhase': {'phase': 'idle'}}}}})
+            client.event_callback({'params': {'sessionId': 'sid', 'update': {'sessionUpdate': 'session_info_update',
+                '_meta': {'codebuddy.ai/agentPhase': {'phase': 'idle'}}}}})
+            notify.assert_called_once_with('session/cancel', {'sessionId': 'sid'})
+
+    def test_verified_worker_exit_receipt_is_interrupted_not_completed(self):
+        transcript = Path(self.folder.name) / 'history.jsonl'
+        transcript.write_text(json.dumps({'type': 'message', 'role': 'user',
+            'content': [{'type': 'text', 'text': '[wb-stopped] task'}]}) + '\n', encoding='utf-8')
+        with patch.object(local_bridge.live, '_transcript_path', return_value=str(transcript)):
+            _, fingerprint = local_bridge._native_turn_snapshot(self.folder.name, 'sid')
+            receipt = {'session_id': 'sid', 'task_id': 'wb-stopped', 'stop_reason': 'interrupted',
+                       'fingerprint': fingerprint}
+            local_bridge._write_state(local_bridge.TERMINAL_PATH, receipt)
+            self.assertEqual(local_bridge.native_turn_state(self.folder.name, 'sid')['state'], 'busy')
+            receipt['recovery'] = {'kind': 'verified_worker_exit', 'pid': 123, 'exited': True}
+            local_bridge._write_state(local_bridge.TERMINAL_PATH, receipt)
+            self.assertEqual(local_bridge.native_turn_state(self.folder.name, 'sid')['state'], 'idle')
+            self.assertEqual(local_bridge.native_turn_state(self.folder.name, 'other')['state'], 'busy')
+            self.assertFalse(local_bridge.record_terminal_turn(self.folder.name, 'sid', 'wb-stopped', 'interrupted'))
+
+    def test_cancel_response_persists_receipt_and_does_not_retry(self):
+        transcript = Path(self.folder.name) / 'history.jsonl'
+        client = MagicMock()
+        client.permissions = []
+        local_bridge.TERMINAL_PATH.write_text('{"old": true}', encoding='utf-8')
+        def cancelled_prompt(prompt, **kwargs):
+            self.assertFalse(local_bridge.TERMINAL_PATH.exists())
+            self.assertTrue(local_bridge.ACTIVE_PATH.exists())
+            transcript.write_text(json.dumps({'type': 'message', 'role': 'user',
+                'content': [{'type': 'text', 'text': prompt}]}) + '\n' +
+                json.dumps({'type': 'function_call', 'name': 'Glob'}) + '\n', encoding='utf-8')
+            return {'result': {'stopReason': 'cancelled'}, 'answer': ''}
+        client.prompt.side_effect = cancelled_prompt
+        with (patch.object(local_bridge, 'discover_native_server',
+                           return_value=('server', 'sid', self.folder.name)),
+              patch.object(local_bridge, 'ScopedClient', return_value=client),
+              patch.object(local_bridge.live, '_transcript_path', return_value=str(transcript))):
+            result = local_bridge.run_task({'cancel': threading.Event(), 'task_id': 'wb-cancel'},
+                                          'cancel regression', Path(self.folder.name), 30)
+            self.assertEqual(result['state'], 'cancelled')
+            self.assertTrue(local_bridge.TERMINAL_PATH.exists())
+            self.assertFalse(local_bridge.ACTIVE_PATH.exists())
+            self.assertEqual(local_bridge.native_turn_state(self.folder.name, 'sid')['state'], 'idle')
+        client.prompt.assert_called_once()
+
+    def test_status_checks_process_lock(self):
+        with local_bridge.native_session_lock():
+            result = asyncio.run(local_bridge.workbuddy_status())
+        self.assertFalse(result['connected'])
+        self.assertIn('Another MCP process', result['error'])
 
     def test_loads_bound_native_session_before_one_prompt(self):
         client = MagicMock()
@@ -137,6 +248,26 @@ class NativeSessionTest(unittest.TestCase):
         self.assertEqual(result['state'], 'failed')
         client.prompt.assert_called_once()
         client.notify.assert_called_once_with('session/cancel', {'sessionId': 'native-id'})
+        self.assertFalse(local_bridge.TERMINAL_PATH.exists())
+        self.assertTrue(local_bridge.ACTIVE_PATH.exists())
+
+    def test_explicit_take_writer_is_passed_to_native_load(self):
+        import json
+        (local_bridge.ROOT / 'desktop_session.json').write_text(json.dumps({
+            'model': 'auto', 'take_writer': True}))
+        client = MagicMock()
+        client.prompt.return_value = {'result': {'stopReason': 'end_turn'}, 'answer': 'ok'}
+        client.permissions = []
+        with (patch.object(local_bridge, 'discover_native_server',
+                           return_value=('server', 'native-id', 'D:/native')),
+              patch.object(local_bridge, 'ScopedClient', return_value=client)):
+            result = local_bridge.run_task({'cancel': threading.Event(), 'task_id': 'wb-test'},
+                                           'one task', Path.cwd(), 30)
+        self.assertEqual(result['state'], 'completed', result)
+        client.request.assert_called_once_with('session/load', {
+            'sessionId': 'native-id', 'cwd': 'D:/native', 'mcpServers': [],
+            '_meta': {'codebuddy.ai/takeWriter': True}}, timeout_seconds=30)
+        client.prompt.assert_called_once()
 
 
 if __name__ == '__main__':

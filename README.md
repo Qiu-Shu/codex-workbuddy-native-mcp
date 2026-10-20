@@ -1,97 +1,150 @@
 # Codex WorkBuddy Native MCP
 
-Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkBuddy，并把对话保留在 WorkBuddy 的一个专用原生会话中。版本：0.1.4。
+让 Codex 通过本机接口把任务交给已经登录的 WorkBuddy，并读回结果。对话保存在一个专用的 WorkBuddy 原生聊天中，通信过程无需鼠标、键盘模拟或 Computer Use。
 
-运行方式是 stdio MCP → 本机 WorkBuddy ACP；不模拟键盘、鼠标，不调用 Computer Use。
+```text
+Codex → stdio MCP → 本机 ACP → WorkBuddy 专用聊天
+```
 
-## 已验证范围
+**本分支是 2026-10-20 本机验证版本的交接快照，尚未合并到主分支。** 它与主分支 v0.1.4 的运行时处理存在差异，不能直接当作其升级包。合并前的兼容问题见 [交接文档](https://github.com/Qiu-Shu/codex-workbuddy-native-mcp/blob/codex/native-catalog-handoff-20261020/docs/HANDOFF.md)。这是社区适配，使用客户端内部 ACP 接口，不是官方稳定 API。
 
-- 2026-10-13，Windows、Python 3.12、WorkBuddy 5.8.2：在已有原生会话中完成文字回复、Read / Write / Edit 文件操作和 WebSearch / WebFetch 联网任务。
-- 2026-10-16，WorkBuddy 5.8.2：通过已注册的 stdio MCP 入口复测文件和联网操作；主动回收连接器专用运行进程后，下一次新任务自动恢复，回复保存在相同原生会话中且只提交一次。56 项自动测试及解压包 MCP 启动检查通过。
-- 2026-10-19，WorkBuddy 5.8.3：修复同一会话存在两个进程时误选连接器后台进程的问题；通过全新 stdio MCP 完成纯文字测试，桌面会话日志收到更新。旧版本的“记录已保存”不能作为窗口可见的证明。
-- 2026-10-20，WorkBuddy 5.8.3：桌面日志忙碌检查阻止手动请求刚发出、尚未落盘时的重叠提交。进程回收后，由用户点击输入框（不发消息）恢复原生端口，再通过全新 stdio MCP 完成纯文字测试；用户确认消息和回复正常显示、无重复、无卡住。尚未实现无人值守的自动恢复。
-- 发布包自动测试覆盖本地逻辑和上游兼容性；还没有在第二台实体电脑上验收。
-- 使用 WorkBuddy 当前登录状态。包内不含账号凭据、聊天记录、会话绑定、Python 环境或个人测试文件。
-- 这是基于客户端内部接口的社区适配，不是官方稳定 API；客户端升级后可能需要适配。
+## 能做什么
 
-## 新电脑安装
+| 能力 | 当前状态 |
+| --- | --- |
+| 委派文字任务、等待结果、请求取消 | 已实现，使用一个共享的专用聊天 |
+| 查询可用模型、当前模型 | 已实现，读取当前会话实际返回的目录 |
+| 搜索技能 | 已实现，搜索当前会话上报的技能名称和描述，包含内置技能 |
+| 选择已有模型 | 已实现，检查当前值，切换后重新连接并读回确认 |
+| 文件与联网任务 | 支持目录内 Read / Write / Edit 和 WebSearch / WebFetch 的权限请求；本快照未重新验收完整文件及联网流程 |
+| 技能市场搜索、安装、启停 | 未实现 |
+| 添加模型提供商或配置 API 密钥 | 未实现 |
+| 自动新建、唤醒本地聊天 | 未实现，仍需要人工准备专用聊天 |
+| 每任务独立聊天与模型绑定 | 未实现，模型选择与随后提交任务不是原子操作 |
 
-需要 Windows、Python 3.11 或更新版本、Codex，以及已经安装并登录的 WorkBuddy。首次安装依赖需要联网。
+这条本地桥接路线不需要创建 WorkBuddy 开放平台应用。会员、可用模型、限流和消耗额度由 WorkBuddy 账号决定；桥接不额外提供额度，也不改变 Codex 主模型。
 
-1. 将整个目录解压到一个长期保留、当前用户可写的位置。注册后不要移动目录，否则 MCP 的绝对路径会失效。
-2. 在 WorkBuddy 中手动创建或选择一个专用会话，发送一句普通消息并等回复结束。每台电脑必须选择它自己的会话，不能沿用其他电脑的 UUID。后续使用时保持 WorkBuddy 已启动、登录；打开该专用会话后点击输入框使光标出现，不必输入或发送唤醒消息。
-3. 在本目录打开 PowerShell，运行以下命令安装依赖并列出最近 30 个会话的 ID、标题和工作目录（不列出消息正文）：
+## 安装
+
+需要 Windows、Python 3.11+、支持 stdio MCP 的 Codex，以及已安装、已登录的 WorkBuddy。实测环境为 Windows、Python 3.14、WorkBuddy 5.8.3；其他版本需要单独确认。首次安装依赖需要联网。
+
+1. 下载本分支到一个长期保留、当前用户可写的目录。注册使用绝对路径，之后不要随意移动目录。
+2. 在 WorkBuddy 手动创建或选择专用聊天，完成一次普通回复。先选好模型，再重新进入该聊天并点击输入框，使光标出现。后续唤醒不用发送消息。
+3. 在项目目录打开 PowerShell，安装依赖并列出最近 30 个本机会话的 ID、标题和工作目录：
 
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
    ```
 
-   如果 `python` 不在 PATH，可在命令末尾加 `-Python '你的 Python.exe 绝对路径'`。
+   Python 不在 PATH 时，在命令后加 `-Python 'Python.exe 的绝对路径'`。
 
-4. 从列表选中专用会话，把下面的占位符替换成真实 UUID：
+4. 选中专用聊天的 UUID 并注册：
 
    ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -SessionId '专用会话的UUID' -Register
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1 -SessionId '本机专用聊天的UUID' -Register
    ```
 
-   脚本创建本目录 `.venv` 和 `desktop_session.json`，并向 `$CODEX_HOME/config.toml`（未设置时为用户目录下 `.codex/config.toml`）追加 `mcp_servers.workbuddy`。已有配置会先备份；若同名 MCP 已存在，脚本会停止，不覆盖它。只绑定会话时省略 `-Register`。
+   脚本创建 `.venv`、`desktop_session.json`，并向 `$CODEX_HOME/config.toml` 追加 `mcp_servers.workbuddy`；未设置 CODEX_HOME 时使用用户目录下的 `.codex/config.toml`。原配置会备份；同名条目已存在时停止，不覆盖。只重新绑定会话时省略 `-Register`，且先等旧任务结束。每台电脑必须绑定自己的会话，不能复制别人的绑定文件。
 
-5. 重启 Codex 或重新加载 MCP，然后让 Codex 调用 `workbuddy_status`。`connected: true` 表示发现了可连接的本机端口，且原生记录和桌面日志均显示空闲；`requires_input_focus: true` 表示需要在 WorkBuddy 打开专用会话并点击输入框，不输入、不发送消息，然后再次检查状态。状态检查不启动进程、不获取写入权，不能代替实际任务验收。注册成功本身也不能证明连接成功。
+5. 重载 Codex MCP 或重新启动 Codex，确认出现下表中的 **7 项工具**，再调用 `workbuddy_status`。随后做一次只回复短文本的测试，并核对 WorkBuddy 窗口。
 
-这些命令的 ExecutionPolicy Bypass 只作用于该 PowerShell 进程，不修改系统执行策略。安装不需要管理员权限。
+注册成功、工具发现成功、会话可连接、任务完成和窗口可见是不同检查。仅有 `connected: true` 不能证明任务已经运行或窗口显示正常。安装不需要管理员权限；上述 ExecutionPolicy Bypass 只作用于该 PowerShell 进程。
+
+### 已有配置如何更新
+
+启动脚本是 `catalog_mcp.py`；直接启动 `local_bridge.py` 只有原来的 4 项工具。若已注册旧版本，只检查并更新 `mcp_servers.workbuddy` 的 Python 与脚本绝对路径，保留其他配置。例如：
+
+```toml
+[mcp_servers.workbuddy]
+command = 'C:\path\to\codex-workbuddy-native-mcp\.venv\Scripts\python.exe'
+args = ['C:\path\to\codex-workbuddy-native-mcp\catalog_mcp.py']
+env = { PYTHONIOENCODING = "utf-8" }
+```
+
+重载后再次检查实际工具列表。磁盘文件更新不代表已经打开的宿主进程同步更新。
+
+### 模型与写入权选项
+
+- 默认 `model` 留空，沿用 WorkBuddy 当前选择；安装参数 `-Model` 可固定模型，但固定值会限制后续动态切换。
+- 默认不接管写入权。本快照保留显式 `-TakeWriter` 选项，只适用于已确认空闲、专用于桥接的聊天；可能替换桌面实时订阅，回复落盘不保证立即在窗口显示。
+- 主分支 v0.1.4 已停用写入权接管。这是待整合的差异，不能把接管当作通用的“会话忙碌”修复。
 
 ## 使用
 
-向 Codex 明确任务和可操作的绝对目录，例如：
+可以直接向 Codex 说明任务和范围，例如：
 
-> 请调用 WorkBuddy，读取我指定工作目录里的 input.txt，把摘要写到同目录 summary.txt。仅允许读写这个目录，不运行 shell。
+> 请查询 WorkBuddy 当前会话有没有与 docx 有关的技能，只查询目录。
 
-工具包括：
+> 请查询 WorkBuddy 可用模型和当前选择，再将当前会话切换到列表中的指定模型，确认读回结果。
 
-| 工具 | 用途 |
+> 请调用 WorkBuddy，读取我指定绝对目录内的 input.txt，把摘要写入同目录 summary.txt。只允许操作这个目录，完成后核对文件。
+
+| 工具 | 参数与结果 |
 | --- | --- |
-| `workbuddy_status` | 探测指定原生会话的活动端点与空闲状态 |
-| `workbuddy_start` | 指定 prompt、现存绝对 cwd，开始一个任务 |
-| `workbuddy_wait` | 每次最多等待 45 秒，直到返回终态 |
-| `workbuddy_cancel` | 请求取消指定任务；之后仍需 wait 确认结果 |
+| `workbuddy_status` | 查询连接和会话状态，返回核心版本、进程 ID 和源码摘要 |
+| `workbuddy_start` | `prompt`、现存绝对 `cwd`；可选 `timeout_seconds`，默认 240，范围 10–600；返回任务 ID |
+| `workbuddy_wait` | 使用启动时返回的 `task_id`；每次最多等 45 秒，`running` 时继续等待 |
+| `workbuddy_cancel` | 请求取消该任务；之后仍需 `wait` 确认终态 |
+| `workbuddy_models` | 返回 `current_model_id` 和当前会话可用的模型 ID、名称、描述 |
+| `workbuddy_skills` | 可选 `query` 和 `limit`；空查询列目录，空格分词全部匹配，最多 100 条 |
+| `workbuddy_set_model` | `model_id`、`expected_current_model_id`；先查询真实 ID，切换后用新连接确认 |
 
-`start` 的任务超时范围为 10–600 秒，默认 240 秒。同一专用会话串行执行；任务 ID 仅在启动它的 MCP 进程中有效。
+同一安装目录下的 MCP 进程通过系统文件锁串行访问专用聊天。不要把多个安装副本绑定到同一聊天：不同副本的锁不共享。任务 ID 只在启动它的 MCP 进程中有效，宿主重启后不能用旧 ID 恢复等待。
 
-## 边界和故障处理
+模型切换影响这个共享聊天的后续任务。切换与提交是两个调用，期间其他调用者可能改变模型。`change_may_have_applied: true` 或 `retry_safe: false` 表示结果不确定，应重新查询实际状态，不能自动重试或回滚。
 
-- 必须先登录 WorkBuddy、绑定并打开专用会话。0.1.3 只连接该会话的桌面运行进程，排除旧版连接器创建的 `codex-native-*` 后台进程；多个候选进程无法区分时停止，不猜测最新端口。
-- 0.1.2 的后台恢复进程虽然使用相同会话 UUID 并保存记录，但不是窗口订阅的进程；0.1.3 起停用此方案。WorkBuddy 5.8.3 在打开聊天时只加载历史，点击输入框等输入操作才启动原生进程。0.1.4 会明确返回 `requires_input_focus`：请点击该聊天的输入框，不发消息，再检查连接。仅保持前台、重开聊天或打开 `workbuddy://chat/…` 不能保证恢复。当前不支持无人值守自动恢复。
-- 0.1.3 不再使用 `takeWriter`：该接口会关闭原有桌面消息订阅。写入权被占用时直接报告错误，不接管、不重发。
-- 回复落盘、桌面接收事件和窗口实际显示是三个不同的验证层次。状态检查不证明窗口可见；首次安装或升级后，请用一条纯文字消息核对窗口。此前已落盘但未显示的消息可能需要重新打开会话或重启 WorkBuddy 后重新加载；不要补发旧任务。
-- 0.1.4 在端点发现、获取写入权之前及发送前检查桌面 SDK 日志；忙碌或状态未知时拒绝提交。仅有 ACP `PHASE_IDLE` 不代表整轮完成。此检查不是与人工操作共享的原子锁，委派期间仍不能手动发送消息；不要发送“连接测试”来唤醒，以免两次请求重叠。
-- 原生会话保留历史。委派期间不要在它里面手动发送消息；不同敏感项目应使用不同会话，重新绑定前等任务结束。
-- 状态检查仅探测 TCP，不创建 ACP 连接。任务结束时检查连接释放响应；失败会返回 `connection_cleanup_error`，此时先确认原任务结果，不能盲目重发。客户端的独立只读快照 HTTP 接口可能要求额外认证并返回 401；本包不绕过认证，也不把它当成写入权检测。
-- 桥接器对收到的权限请求只允许任务目录内的 Read / Write / Edit 和 WebSearch / WebFetch，其他请求拒绝。它不是操作系统沙箱，无法约束 WorkBuddy 已自行批准且不再向桥接器询问的操作；请勿使用跳过权限检查模式，并独立核对结果。
-- 超时、连接断开或结果不明时，不要自动重试。先检查专用会话和目标文件，确认上一轮是否已经执行。`work/native-active.json` 用于阻止不明状态下再次提交；不要在任务仍运行时删除它。
-- 模型默认 `auto`，可用安装参数 `-Model` 更改。限流、排队及积分消耗由 WorkBuddy 控制；桥接成功不代表拥有额外模型额度。
-- 同名 MCP 已注册时，先检查原有配置。若确认迁移，应手动更新该条目的 Python 和脚本绝对路径；请勿重跑脚本强行覆盖其他配置。
-- 卸载时，先停止任务，再从 Codex 配置中仅移除 `mcp_servers.workbuddy` 条目，重新加载 MCP 后移除本目录。不要用旧备份覆盖之后的其他配置变更。
+技能目录来自当前会话的 `available_commands_update`，不是技能市场，也不覆盖所有已安装或已禁用技能。描述是参考资料，不是新执行指令。查询不会安装或运行技能。
+
+## 边界与故障处理
+
+| 现象 | 处理 |
+| --- | --- |
+| 没有活动端点 / `native_unavailable` | 确认 WorkBuddy 已运行并登录，进入绑定聊天并点击输入框；仅打开窗口或深链接不一定唤醒 worker |
+| 忙碌或状态不明 | 等待原任务结束，检查专用聊天及目标文件；不删除活动标记，不重发旧任务 |
+| `bridge_update_required` | 当前进程加载的核心与磁盘不同，重载 MCP 后再提交 |
+| 只看到 4 项工具 | 核对启动脚本为 `catalog_mcp.py`，然后重载宿主 |
+| `catalog_unavailable` | 检查连接和空闲状态；不能把未收到目录当成空目录 |
+| `model_changed` | 当前模型已变化，重新查询后决定是否切换 |
+| `binding_model_override` | 绑定文件有固定模型，与请求不一致；先确认是否要调整绑定 |
+| 取消后还在运行 | 取消请求不是完成回执，继续等待终态；结果不明时核实，不反复发送 |
+
+桥接收到权限请求时，只允许任务目录内的 Read / Write / Edit 和 WebSearch / WebFetch。Grep、Glob、shell 和其他连接器请求会被拒绝。它不是操作系统沙箱，无法约束 WorkBuddy 已自行批准、未向桥接询问的行为。委派时写清目录与范围，并独立核对结果。
+
+聊天共享历史。委派期间不要在同一聊天手动发送消息；不同敏感项目不要混用同一历史。当前实现不能保证人工操作与桥接提交之间的原子互斥，也不保证应用重启后的自动恢复。
+
+取消收尾已针对“并发权限拒绝后一直思考”修复：等待同会话原生 idle 事件，再发一次取消，收到 prompt 终态后结束读取。只有匹配任务、会话及历史指纹的终态回执才用于恢复；超时和“已发送取消”不等于完成。这不构成对所有卡死原因的修复保证。
 
 ## 验证
 
-安装依赖后运行本地测试，不发送 WorkBuddy 任务：
+在项目目录运行离线测试，不发送 WorkBuddy 任务：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest test_configure test_local_bridge test_compat test_writer test_runtime test_visibility test_desktop_busy
+.\.venv\Scripts\python.exe -m unittest test_model_selection test_catalog_mcp test_local_bridge test_configure test_compat -q
 $env:PYTHONPATH = (Resolve-Path .\vendor\desktop-bridge).Path
-.\.venv\Scripts\python.exe -m unittest discover -s vendor/desktop-bridge/workbuddy_bridge -p 'test_*.py'
+.\.venv\Scripts\python.exe -m unittest discover -s vendor/desktop-bridge/workbuddy_bridge -p 'test_*.py' -q
 ```
 
-绑定完成后，可主动运行完整联网实测（会在专用聊天里发送三轮任务、使用 WorkBuddy 额度，并在本目录 `work/` 下写入随机测试数据）：
+第二条命令的 PYTHONPATH 仅用于当前 PowerShell。Windows 若将临时目录显示为短路径，相关路径断言可能需要把当前进程 TEMP/TMP 设为对应长路径后重跑，不修改系统环境设置。
+
+绑定后可选择运行完整集成脚本。它会发送三轮真实任务，消耗 WorkBuddy 额度，在 `work/` 写入随机测试文件，并访问 IANA 官方页面：
 
 ```powershell
 .\.venv\Scripts\python.exe .\integration_test.py
+# 使用实际注册的 Codex 配置测试：
+.\.venv\Scripts\python.exe .\integration_test.py --registered
 ```
 
-成功条件为读写结果与本地期望一致、Edit 保留其他字段，以及观察到 WebSearch / WebFetch 完成事件。测试数据和报告不会被 Git 跟踪。
+脚本覆盖文件读写/编辑与联网，不覆盖模型切换或自动会话生命周期；不能仅凭脚本存在就认定实测已通过。证据与未测范围见 [验证记录](docs/VALIDATION.md)。
 
-## 来源
+## 项目结构与来源
 
-复用 [Kxiandaoyan/workbuddy-acp-bridge](https://github.com/Kxiandaoyan/workbuddy-acp-bridge) 的活动端点发现，以及 [gosick233-cloud/Codex-WorkBuddy-Desktop-Bridge](https://github.com/gosick233-cloud/Codex-WorkBuddy-Desktop-Bridge) 的 ACP 客户端。
+- `catalog_mcp.py`：7 项工具入口，目录查询与模型选择。
+- `local_bridge.py`：任务执行、取消、权限、锁和终态记录。
+- `configure.py` / `setup.ps1`：本机会话绑定与 Codex 注册。
+- `vendor/`：固定版本上游实现和许可证；其 README 描述上游项目，本包以本 README 为准。
+- `RELEASE_MANIFEST.json`：可分发文件的 SHA-256，清单自身不参与哈希。
+- [变更说明](LOCAL_CHANGES.md)、[验证记录](docs/VALIDATION.md)、[交接文档](https://github.com/Qiu-Shu/codex-workbuddy-native-mcp/blob/codex/native-catalog-handoff-20261020/docs/HANDOFF.md)。
 
-固定版本、修改说明与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。`vendor` 中上游 README 描述的是各自原项目；本包以这份 README 的安装步骤和能力范围为准。
+不分发 `.venv`、`desktop_session.json`、会话历史、日志、配置备份、密钥或个人测试数据。卸载前先结束任务，仅移除 Codex 的 `mcp_servers.workbuddy` 条目并重载，再删除安装目录。
+
+复用 [workbuddy-acp-bridge](https://github.com/Kxiandaoyan/workbuddy-acp-bridge) 与 [Codex-WorkBuddy-Desktop-Bridge](https://github.com/gosick233-cloud/Codex-WorkBuddy-Desktop-Bridge)。固定提交及修改说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。本项目及所附上游组件为 MIT 许可，保留各自版权声明；不代表 WorkBuddy 或 Codex 官方。

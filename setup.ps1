@@ -2,8 +2,9 @@
 param(
     [string]$SessionId,
     [string]$Python = 'python',
-    [string]$Model = 'auto',
-    [switch]$Register
+    [string]$Model = '',
+    [switch]$Register,
+    [switch]$TakeWriter
 )
 $ErrorActionPreference = 'Stop'
 if ($Register -and -not $SessionId) { throw '-Register requires -SessionId' }
@@ -18,8 +19,10 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
 $configArgs = @((Join-Path $PSScriptRoot 'configure.py'))
 if ($SessionId) {
-    $configArgs += @('--session-id', $SessionId, '--model', $Model)
+    $configArgs += @('--session-id', $SessionId)
+    if ($Model) { $configArgs += @('--model', $Model) }
     if ($Register) { $configArgs += '--register' }
+    if ($TakeWriter) { $configArgs += '--take-writer' }
 } else {
     $configArgs += '--list'
 }

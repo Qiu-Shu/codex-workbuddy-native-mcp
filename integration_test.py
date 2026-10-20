@@ -34,14 +34,14 @@ async def main():
         params = StdioServerParameters(command=config['command'], args=config['args'], env=config.get('env'))
         report['registered_config_verified'] = True
     else:
-        params = StdioServerParameters(command=sys.executable, args=[str(ROOT / 'local_bridge.py')])
+        params = StdioServerParameters(command=sys.executable, args=[str(ROOT / 'catalog_mcp.py')])
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write, read_timeout_seconds=timedelta(seconds=700)) as session:
             await session.initialize()
             report['tools'] = [t.name for t in (await session.list_tools()).tools]
             report['connection'] = payload(await session.call_tool('workbuddy_status', {}))
             print(json.dumps({'tools': report['tools'], 'connection': report['connection']}), flush=True)
-            assert report['connection']['connected'] or report['connection'].get('can_attempt_recovery')
+            assert report['connection']['connected']
             async def run(prompt):
                 start = payload(await session.call_tool('workbuddy_start', {
                     'prompt': prompt, 'cwd': str(folder), 'timeout_seconds': 240}))

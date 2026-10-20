@@ -361,11 +361,12 @@ class AcpClient:
         self._send_lock = threading.Lock()
 
     def close(self) -> None:
-        try:
-            if self.connection_id:
-                self._http.delete(self.server.acp_endpoint, headers=self._headers(), timeout=5.0).raise_for_status()
-        finally:
-            self._http.close()
+        if self.connection_id:
+            try:
+                self._http.delete(self.server.acp_endpoint, headers=self._headers(), timeout=5.0)
+            except Exception:
+                pass
+        self._http.close()
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -536,6 +537,7 @@ class AcpClient:
                             raise WorkBuddyError(error.get("message", str(error)))
                         result = event.get("result")
                         result_found = True
+                        break
                     elif event.get("id") is not None and event.get("method") == "session/request_permission":
                         self._grant_permission(event)
                     if time.monotonic() > deadline:

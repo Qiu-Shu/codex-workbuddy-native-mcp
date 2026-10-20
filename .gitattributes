@@ -1,0 +1,2 @@
+# Preserve release bytes so SHA-256 manifests also verify after a Windows checkout.
+* -text
