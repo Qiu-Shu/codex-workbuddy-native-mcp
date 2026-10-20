@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 import tempfile
@@ -11,6 +12,11 @@ SID = '11111111-1111-4111-8111-111111111111'
 
 
 class VisibilityTest(unittest.TestCase):
+    def setUp(self):
+        desktop = patch.object(bridge, 'desktop_turn_state', return_value='idle')
+        desktop.start()
+        self.addCleanup(desktop.stop)
+
     def discover(self, records, owned):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -51,6 +57,15 @@ class VisibilityTest(unittest.TestCase):
             with self.assertRaises(WorkBuddyError):
                 bridge.load_native_writer(client, SID, 'D:/native')
         self.assertEqual(client.request.call_count, 1)
+
+    def test_dormant_status_requires_input_focus_without_automatic_retry(self):
+        with patch.object(bridge, 'discover_native_server',
+                          side_effect=bridge.NativeRuntimeDormant('input focus required')):
+            status = asyncio.run(bridge.workbuddy_status())
+        self.assertFalse(status['connected'])
+        self.assertFalse(status['can_attempt_recovery'])
+        self.assertTrue(status.get('requires_input_focus'))
+        self.assertEqual(status.get('recovery_action'), 'click_bound_chat_input_without_sending')
 
 
 if __name__ == '__main__':

@@ -56,6 +56,9 @@ class PermissionsTest(unittest.TestCase):
 
 class NativeSessionTest(unittest.TestCase):
     def setUp(self):
+        desktop = patch.object(local_bridge, 'desktop_turn_state', return_value='idle')
+        desktop.start()
+        self.addCleanup(desktop.stop)
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
         for key, filename in [('NATIVE_LOCK_PATH', 'lock'), ('ACTIVE_PATH', 'active.json')]:

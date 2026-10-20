@@ -1,6 +1,6 @@
 # Codex WorkBuddy Native MCP
 
-Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkBuddy，并把对话保留在 WorkBuddy 的一个专用原生会话中。版本：0.1.3。
+Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkBuddy，并把对话保留在 WorkBuddy 的一个专用原生会话中。版本：0.1.4。
 
 运行方式是 stdio MCP → 本机 WorkBuddy ACP；不模拟键盘、鼠标，不调用 Computer Use。
 
@@ -9,6 +9,7 @@ Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkB
 - 2026-10-13，Windows、Python 3.12、WorkBuddy 5.8.2：在已有原生会话中完成文字回复、Read / Write / Edit 文件操作和 WebSearch / WebFetch 联网任务。
 - 2026-10-16，WorkBuddy 5.8.2：通过已注册的 stdio MCP 入口复测文件和联网操作；主动回收连接器专用运行进程后，下一次新任务自动恢复，回复保存在相同原生会话中且只提交一次。56 项自动测试及解压包 MCP 启动检查通过。
 - 2026-10-19，WorkBuddy 5.8.3：修复同一会话存在两个进程时误选连接器后台进程的问题；通过全新 stdio MCP 完成纯文字测试，桌面会话日志收到更新。旧版本的“记录已保存”不能作为窗口可见的证明。
+- 2026-10-20，WorkBuddy 5.8.3：桌面日志忙碌检查阻止手动请求刚发出、尚未落盘时的重叠提交。进程回收后，由用户点击输入框（不发消息）恢复原生端口，再通过全新 stdio MCP 完成纯文字测试；用户确认消息和回复正常显示、无重复、无卡住。尚未实现无人值守的自动恢复。
 - 发布包自动测试覆盖本地逻辑和上游兼容性；还没有在第二台实体电脑上验收。
 - 使用 WorkBuddy 当前登录状态。包内不含账号凭据、聊天记录、会话绑定、Python 环境或个人测试文件。
 - 这是基于客户端内部接口的社区适配，不是官方稳定 API；客户端升级后可能需要适配。
@@ -18,7 +19,7 @@ Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkB
 需要 Windows、Python 3.11 或更新版本、Codex，以及已经安装并登录的 WorkBuddy。首次安装依赖需要联网。
 
 1. 将整个目录解压到一个长期保留、当前用户可写的位置。注册后不要移动目录，否则 MCP 的绝对路径会失效。
-2. 在 WorkBuddy 中手动创建或选择一个专用会话，发送一句普通消息并等回复结束。每台电脑必须选择它自己的会话，不能沿用其他电脑的 UUID。后续使用时保持 WorkBuddy 已启动、登录，并打开该专用会话。
+2. 在 WorkBuddy 中手动创建或选择一个专用会话，发送一句普通消息并等回复结束。每台电脑必须选择它自己的会话，不能沿用其他电脑的 UUID。后续使用时保持 WorkBuddy 已启动、登录；打开该专用会话后点击输入框使光标出现，不必输入或发送唤醒消息。
 3. 在本目录打开 PowerShell，运行以下命令安装依赖并列出最近 30 个会话的 ID、标题和工作目录（不列出消息正文）：
 
    ```powershell
@@ -35,7 +36,7 @@ Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkB
 
    脚本创建本目录 `.venv` 和 `desktop_session.json`，并向 `$CODEX_HOME/config.toml`（未设置时为用户目录下 `.codex/config.toml`）追加 `mcp_servers.workbuddy`。已有配置会先备份；若同名 MCP 已存在，脚本会停止，不覆盖它。只绑定会话时省略 `-Register`。
 
-5. 重启 Codex 或重新加载 MCP，然后让 Codex 调用 `workbuddy_status`。`connected: true` 表示发现了可连接的本机端口，且原生记录显示空闲；`requires_desktop_open: true` 表示需要在 WorkBuddy 重新打开专用会话。状态检查不启动进程、不获取写入权，不能代替实际任务验收。注册成功本身也不能证明连接成功。
+5. 重启 Codex 或重新加载 MCP，然后让 Codex 调用 `workbuddy_status`。`connected: true` 表示发现了可连接的本机端口，且原生记录和桌面日志均显示空闲；`requires_input_focus: true` 表示需要在 WorkBuddy 打开专用会话并点击输入框，不输入、不发送消息，然后再次检查状态。状态检查不启动进程、不获取写入权，不能代替实际任务验收。注册成功本身也不能证明连接成功。
 
 这些命令的 ExecutionPolicy Bypass 只作用于该 PowerShell 进程，不修改系统执行策略。安装不需要管理员权限。
 
@@ -59,9 +60,10 @@ Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkB
 ## 边界和故障处理
 
 - 必须先登录 WorkBuddy、绑定并打开专用会话。0.1.3 只连接该会话的桌面运行进程，排除旧版连接器创建的 `codex-native-*` 后台进程；多个候选进程无法区分时停止，不猜测最新端口。
-- 0.1.2 的后台恢复进程虽然使用相同会话 UUID 并保存记录，但不是窗口订阅的进程。0.1.3 停止这种自动恢复：桌面进程被回收后，请在 WorkBuddy 重新打开专用聊天，然后再提交新任务。连接器不操作界面，也不重发以前的任务。
+- 0.1.2 的后台恢复进程虽然使用相同会话 UUID 并保存记录，但不是窗口订阅的进程；0.1.3 起停用此方案。WorkBuddy 5.8.3 在打开聊天时只加载历史，点击输入框等输入操作才启动原生进程。0.1.4 会明确返回 `requires_input_focus`：请点击该聊天的输入框，不发消息，再检查连接。仅保持前台、重开聊天或打开 `workbuddy://chat/…` 不能保证恢复。当前不支持无人值守自动恢复。
 - 0.1.3 不再使用 `takeWriter`：该接口会关闭原有桌面消息订阅。写入权被占用时直接报告错误，不接管、不重发。
 - 回复落盘、桌面接收事件和窗口实际显示是三个不同的验证层次。状态检查不证明窗口可见；首次安装或升级后，请用一条纯文字消息核对窗口。此前已落盘但未显示的消息可能需要重新打开会话或重启 WorkBuddy 后重新加载；不要补发旧任务。
+- 0.1.4 在端点发现、获取写入权之前及发送前检查桌面 SDK 日志；忙碌或状态未知时拒绝提交。仅有 ACP `PHASE_IDLE` 不代表整轮完成。此检查不是与人工操作共享的原子锁，委派期间仍不能手动发送消息；不要发送“连接测试”来唤醒，以免两次请求重叠。
 - 原生会话保留历史。委派期间不要在它里面手动发送消息；不同敏感项目应使用不同会话，重新绑定前等任务结束。
 - 状态检查仅探测 TCP，不创建 ACP 连接。任务结束时检查连接释放响应；失败会返回 `connection_cleanup_error`，此时先确认原任务结果，不能盲目重发。客户端的独立只读快照 HTTP 接口可能要求额外认证并返回 401；本包不绕过认证，也不把它当成写入权检测。
 - 桥接器对收到的权限请求只允许任务目录内的 Read / Write / Edit 和 WebSearch / WebFetch，其他请求拒绝。它不是操作系统沙箱，无法约束 WorkBuddy 已自行批准且不再向桥接器询问的操作；请勿使用跳过权限检查模式，并独立核对结果。
@@ -75,7 +77,7 @@ Windows 上通过本机 ACP 接口，让 Codex 委派任务给已登录的 WorkB
 安装依赖后运行本地测试，不发送 WorkBuddy 任务：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest test_configure test_local_bridge test_compat test_writer test_runtime test_visibility
+.\.venv\Scripts\python.exe -m unittest test_configure test_local_bridge test_compat test_writer test_runtime test_visibility test_desktop_busy
 $env:PYTHONPATH = (Resolve-Path .\vendor\desktop-bridge).Path
 .\.venv\Scripts\python.exe -m unittest discover -s vendor/desktop-bridge/workbuddy_bridge -p 'test_*.py'
 ```

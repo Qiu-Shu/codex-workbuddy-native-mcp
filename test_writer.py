@@ -12,6 +12,11 @@ from workbuddy_bridge.acp import AcpClient, DesktopServer, WorkBuddyError
 
 
 class WriterTest(unittest.TestCase):
+    def setUp(self):
+        desktop = patch.object(bridge, 'desktop_turn_state', return_value='idle')
+        desktop.start()
+        self.addCleanup(desktop.stop)
+
     def test_writer_conflicts_stop_in_all_transcript_states(self):
         occupied = WorkBuddyError('Persistent Session already has an external writer')
         for state, expected_calls in [('idle', 1), ('unknown', 1), ('busy', 1)]:

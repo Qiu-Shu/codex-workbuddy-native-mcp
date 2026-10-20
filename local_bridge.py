@@ -25,7 +25,11 @@ mcp = FastMCP('workbuddy', instructions=(
     'Use start then wait. Web search/fetch and file Read/Write/Edit approvals within cwd are supported. '
     'Other permission requests are denied and reported. This is not an OS sandbox. '
     'Verify outputs independently. WorkBuddy must be running and logged in. '
-    'Open the bound native chat in WorkBuddy before starting. A dormant chat requires reopening there; '
+    'Open the bound native chat in WorkBuddy before starting. On WorkBuddy 5.8.3, a dormant chat '
+    'requires the user to click its input box without typing or sending, then keep that chat open. '
+    'Opening or focusing the window, including a deep link, is not sufficient. '
+    'Do not ask the user to send a wake-up message. Check status again after input focus. '
+    'Desktop busy or unknown state blocks submission even if the transcript looks idle. '
     'the connector never starts a hidden replacement worker or takes another writer away. '
     'Tasks use one dedicated native chat with persistent shared history. Do not use that chat manually '
     'while a delegated task runs. Never retry a failed or timed-out task automatically. '
@@ -80,6 +84,53 @@ def native_turn_state(native_cwd, sid):
     return parse_native_turn(rows)
 
 
+def parse_desktop_turn(lines):
+    """The desktop can be working before its prompt reaches the transcript."""
+    state = 'unknown'
+    for line in lines:
+        head, separator, body = line.partition(' {')
+        if not separator:
+            continue
+        try:
+            data = json.loads('{' + body)
+        except ValueError:
+            continue
+        if head.endswith(' method:sendPrompt'):
+            state = 'busy'
+        elif head.endswith(' state-machine:transition'):
+            state = 'idle' if data.get('to') == 'idle' else 'busy'
+        elif state == 'unknown' and head.endswith(' method:requests:result'):
+            states = data.get('states')
+            if isinstance(states, dict):
+                terminal = {'completed', 'cancelled', 'error', 'failed'}
+                state = 'busy' if any(count for key, count in states.items() if key not in terminal) else 'idle'
+    return state
+
+
+def desktop_turn_state(sid):
+    sid = str(uuid.UUID(sid))
+    root = Path.home() / '.workbuddy/logs'
+    paths = list(root.glob('????-??-??/sdk/conversations/' + sid + '.log'))
+    if not paths:
+        return 'unknown'
+    path = max(paths, key=lambda item: item.stat().st_mtime_ns)
+    with path.open('rb') as handle:
+        offset = max(0, path.stat().st_size - 256 * 1024)
+        handle.seek(offset)
+        if offset:
+            handle.readline()
+        lines = handle.read().splitlines(keepends=True)
+    return parse_desktop_turn(line.decode('utf-8', errors='replace').rstrip()
+                              for line in lines if line.endswith(b'\n'))
+
+
+def require_desktop_idle(sid):
+    state = desktop_turn_state(sid)
+    if state != 'idle':
+        raise RuntimeError('Dedicated desktop chat is ' + state +
+                           '; wait for the window to finish before submitting. No task sent.')
+
+
 def discover_native_server(activate=False):
     binding = ROOT / 'desktop_session.json'
     if not binding.is_file():
@@ -106,11 +157,15 @@ def discover_native_server(activate=False):
             raise RuntimeError('Native endpoint working directory mismatch')
         candidates[endpoint] = record
     if not candidates:
-        raise NativeRuntimeDormant('Open the bound chat in WorkBuddy; no desktop runtime is connected. '
-                                   'A hidden replacement would not update the chat window.')
+        raise NativeRuntimeDormant(
+            'No desktop runtime is connected. Open the bound WorkBuddy chat and click its input box '
+            'without typing or sending a message; keep that chat open, then check status again. '
+            'Opening the window or a deep link alone is insufficient on WorkBuddy 5.8.3. '
+            'Automatic recovery is unavailable; no task sent.')
     if len(candidates) != 1:
         raise RuntimeError('Native desktop runtime is ambiguous; no task submitted')
     endpoint = next(iter(candidates))
+    require_desktop_idle(sid)
     with socket.create_connection(('127.0.0.1', urlsplit(endpoint).port), timeout=3):
         pass
     return DesktopServer(endpoint, '', sid, '', 0), sid, native_cwd
@@ -215,6 +270,7 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
         client.native_cwd = native_cwd
         task['client'] = client
         client.connect()
+        require_desktop_idle(sid)
         # WorkBuddy 5.8.2 requires session/load on each fresh connection before prompt.
         load_native_writer(client, sid, native_cwd)
         client.session_id = sid
@@ -238,6 +294,7 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
         with task['control_lock']:
             if task['cancel'].is_set():
                 return {'state': 'cancelled'}
+            require_desktop_idle(sid)
             active_tmp = ACTIVE_PATH.with_suffix('.tmp')
             active_tmp.write_text(json.dumps({'task_id': task['task_id'], 'session_id': sid}), encoding='utf-8')
             active_tmp.replace(ACTIVE_PATH)
@@ -285,12 +342,13 @@ async def workbuddy_status() -> dict:
     try:
         server, sid, native_cwd = await asyncio.to_thread(discover_native_server)
         return {'connected': True, 'endpoint': server.acp_endpoint, 'concurrency': 1,
-                'connection_check': 'TCP reachable; native transcript idle; writer not acquired',
+                'connection_check': 'TCP reachable; native transcript and desktop idle; writer not acquired',
                 'session_id': sid, 'native_history': True, 'native_cwd': native_cwd,
                 'permissions': 'default mode; scoped allow_once responses; not an OS sandbox'}
     except NativeRuntimeDormant as exc:
         return {'connected': False, 'can_attempt_recovery': False,
-                'requires_desktop_open': True, 'error': str(exc)}
+                'requires_desktop_open': True, 'requires_input_focus': True,
+                'recovery_action': 'click_bound_chat_input_without_sending', 'error': str(exc)}
     except Exception as exc:
         return {'connected': False, 'can_attempt_recovery': False, 'error': str(exc)}
 

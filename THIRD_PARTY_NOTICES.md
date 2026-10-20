@@ -17,6 +17,8 @@ Version 0.1.2 adds `native_runtime.py`, reusing the vendored desktop bridge's si
 
 Version 0.1.3 selects the desktop runtime instead of the newest same-session worker, excludes legacy bridge-owned workers, rejects ambiguous endpoints, and removes writer takeover. The MCP entry no longer creates hidden recovery workers because those do not update the desktop subscription. A dormant chat must be reopened in WorkBuddy. Regression tests cover duplicate runtime selection and preservation of the desktop subscription.
 
+Version 0.1.4 adds fail-closed desktop SDK log checks before writer acquisition and prompt dispatch, and corrects dormant-session guidance for WorkBuddy 5.8.3. Opening a chat or deep link alone does not start its runtime; user input-box focus is required. No automatic dormant recovery is claimed. The native text-only test completed with end_turn, and the user confirmed visible messages without duplication or a stuck turn.
+
 Runtime dependencies are installed from `requirements.txt`: httpx 0.28.1 and mcp 1.30.0. They and their transitive dependencies retain their own licenses; their binaries and virtual environments are not bundled.
 
 WorkBuddy and Codex are products of their respective owners. This project is a community integration and is not represented as an official integration.
