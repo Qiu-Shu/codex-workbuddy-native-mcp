@@ -7,7 +7,7 @@ import json
 
 import local_bridge as bridge
 
-CATALOG_REVISION = '2026-10-24-independent-catalog-v3'
+CATALOG_REVISION = '2026-10-24-guarded-catalog-v4'
 
 
 class CatalogClient(bridge.AcpClient):
@@ -92,8 +92,7 @@ def read_catalog(kind, query='', limit=30):
             client = CatalogClient(server, timeout_seconds=25, event_callback=observe)
             try:
                 client.connect()
-                data = client.request('session/load', {'sessionId': sid, 'cwd': cwd, 'mcpServers': []},
-                                      timeout_seconds=20)
+                data = bridge.load_native_writer(client, sid, cwd)
                 return catalog_result(kind, data, commands, sid, query, limit)
             finally:
                 client.close()
@@ -171,12 +170,9 @@ def select_model(model_id, expected_current_model_id):
         with bridge.native_session_lock():
             server, sid, cwd = bridge.discover_native_server()
             config = json.loads((bridge.ROOT / 'desktop_session.json').read_text(encoding='utf-8'))
-            load = {'sessionId': sid, 'cwd': cwd, 'mcpServers': []}
-            if config.get('take_writer') is True:
-                load['_meta'] = {'codebuddy.ai/takeWriter': True}
             with closing(CatalogClient(server, timeout_seconds=25)) as client:
                 client.connect()
-                before = public_models(client.request('session/load', load, timeout_seconds=20))
+                before = public_models(bridge.load_native_writer(client, sid, cwd))
                 current = before['current_model_id']
                 result.update(session_id=sid, previous_model_id=current, current_model_id=current)
                 if model_id not in {row['modelId'] for row in before['models']}:
@@ -190,6 +186,7 @@ def select_model(model_id, expected_current_model_id):
                             'change_may_have_applied': False, 'error': 'The explicit binding model would override this choice on the next task.'}
                 if current == model_id:
                     return {**result, 'ok': True, 'changed': False, 'verified_after_reconnect': False}
+                bridge.require_desktop_idle(sid)
                 result.pop('current_model_id')
                 change_sent = True
                 client.request('session/set_model', {'sessionId': sid, 'modelId': model_id}, timeout_seconds=20)
@@ -199,8 +196,7 @@ def select_model(model_id, expected_current_model_id):
                 raise RuntimeError('Session identity changed during model selection')
             with closing(CatalogClient(server, timeout_seconds=25)) as client:
                 client.connect()
-                after = public_models(client.request('session/load', {
-                    'sessionId': sid, 'cwd': verified_cwd, 'mcpServers': []}, timeout_seconds=20))
+                after = public_models(bridge.load_native_writer(client, sid, verified_cwd))
             result['current_model_id'] = after['current_model_id']
             if after['current_model_id'] != model_id:
                 return {**result, 'ok': False, 'error_code': 'model_verification_failed',

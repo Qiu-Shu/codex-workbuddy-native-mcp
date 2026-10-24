@@ -4,12 +4,11 @@ param(
     [string]$Python = 'python',
     [string]$Model = '',
     [switch]$Register,
-    [switch]$TakeWriter,
     [switch]$Background
 )
 $ErrorActionPreference = 'Stop'
 if ($Register -and -not $SessionId -and -not $Background) { throw '-Register requires -SessionId or -Background' }
-if ($Background -and ($SessionId -or $Model -or $TakeWriter)) { throw '-Background cannot be combined with desktop binding options' }
+if ($Background -and ($SessionId -or $Model)) { throw '-Background cannot be combined with desktop binding options' }
 $venvPython = Join-Path $PSScriptRoot '.venv/Scripts/python.exe'
 if (-not (Test-Path -LiteralPath $venvPython)) {
     & $Python -c 'import sys; assert sys.version_info >= (3,11), "Python 3.11+ required"'
@@ -27,7 +26,6 @@ if ($Background) {
     $configArgs += @('--session-id', $SessionId)
     if ($Model) { $configArgs += @('--model', $Model) }
     if ($Register) { $configArgs += '--register' }
-    if ($TakeWriter) { $configArgs += '--take-writer' }
 } else {
     $configArgs += '--list'
 }

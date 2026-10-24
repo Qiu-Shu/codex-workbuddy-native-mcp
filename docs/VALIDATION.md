@@ -6,16 +6,16 @@
 
 | 项目 | 值 |
 | --- | --- |
-| 核心 | `2026-10-24-route-status-v5` |
-| 核心 SHA-256 | `60e2cae36ae20742af366ad6f3b59c23e0c970bdb1e73d30ccee153a21dcf544` |
-| 目录 | `2026-10-24-independent-catalog-v3` |
+| 核心 | `2026-10-24-merged-guards-v6` |
+| 核心 SHA-256 | `160cbe5a2245d5967c490ce52a9a23ae18b1a6699fd626d5ae1aa2211c2ee4eb` |
+| 目录 | `2026-10-24-guarded-catalog-v4` |
 | 后台会话 | `2026-10-24-verified-model-v2` |
 | 入口 / 工具数 | `catalog_mcp.py` / 11 |
 | 环境 | Windows、Python 3.14、WorkBuddy 5.8.3、mcp 1.30.0、httpx 0.28.1 |
 
-## 当前宿主的实际调用
+## 当前宿主的实际调用（整合前 v5，保留原验证范围）
 
-- `workbuddy_status` 返回上述 v5 和匹配源码摘要，`available=true`、`background.ready=true`；旧共享聊天仍无活动连接。
+- `workbuddy_status` 返回 v5 和匹配的当时源码摘要，`available=true`、`background.ready=true`；旧共享聊天仍无活动连接。
 - `workbuddy_models(cwd=...)` 返回 21 个模型，包含 `kimi-k3-2`，查询未发送提示词且 worker 已释放。
 - 使用当前聊天实际加载的 `workbuddy_background_start` 指定 Kimi，再通过 `workbuddy_wait` 取得正确的 46×27 计算结果。
 - 该轮 `completed/end_turn`、`actual_model_id=kimi-k3-2`、`model_verified=true`，权限事件为空，`worker_released=true`、`requires_recovery=false`。
@@ -29,10 +29,18 @@
 - 两轮均已释放 worker、无需恢复、没有工具权限事件。另起实际部署入口，只查状态和目录，也通过。
 - 10 月 23 日已验证两个独立后台会话上下文隔离、跨 worker 和桥接进程续聊；原始记录保留在来源工作区。
 
+## 合并版本 v6 的真实验证
+
+- 从本次 Git 检出目录启动全新的 stdio MCP，发现 11 工具，返回核心 v6；未覆盖本机已注册安装。
+- 没有共享绑定时后台就绪，独立模型目录读取成功，目录 worker 已释放。
+- 明确指定 kimi-k3-2，执行纯文字连接测试；返回预期校验字符串及计算结果 1242。
+- 该轮 completed/end_turn、model_verified=true、actual_model_id=kimi-k3-2、worker_released=true、requires_recovery=false，权限事件为空。
+- 恢复清理错误传播后，真实目录查询和后台任务仍正常完成；原始回执仅保存于本地忽略目录。
+
 ## 本次发布验证
 
-- 发布检出目录运行 66 项本地测试和 31 项 vendor 测试。
-- 新回归测试先重现旧症状失败，再验证共享断开时后台就绪、独立目录、模型不匹配不发送、异常清理、模型续聊保留和版本保护。
+- 发布检出目录运行 91 项本地测试和 31 项 vendor 测试。
+- 恢复 main 的 23 项测试，先观察缺失保护导致失败，再整合通过。新增回归先复现旧配置抢占 writer、桌面变忙后仍切换模型的问题，再验证修复；原有后台、取消、模型及版本保护测试保留。
 - Windows 默认短 TEMP 路径会触发 vendor 一个已有路径匹配用例；测试进程 TEMP/TMP 指向完整路径后通过，未改 vendor 实现。
 - 分发按显式源文件清单整理，核对 README 链接、语法、PowerShell 解析和 Git 对象哈希清单。
 - 不含绑定文件、环境、凭据、缓存、配置备份、个人路径、业务提示词、会话历史、日志或原始验收回执。
@@ -43,4 +51,4 @@
 
 未重新运行完整文件/联网业务集成、第二台实体电脑、其他客户端版本或长期无人值守测试。Sidecar 就绪不证明额度或推理正常。取消、恢复与超时仍需看具体任务终态，不能自动重试未知结果。
 
-后台会话尚未登记到 WorkBuddy 桌面列表；任意已有桌面聊天的通用选择入口未实现。已有原生聊天直连与原历史追加的受控试验通过，但该诊断入口未作为通用工具发布。主分支防护与本快照的整合也未完成，见 [交接文档](HANDOFF.md)。
+后台会话尚未登记到 WorkBuddy 桌面列表；任意已有桌面聊天的通用选择入口未实现。已有原生聊天直连与原历史追加的受控试验通过，但该诊断入口未作为通用工具发布。主分支共享防护已整合，合并要求和后续范围见 [交接文档](HANDOFF.md)。本轮未在真实共享桌面聊天提交任务或切换模型；这些保护通过离线回归验证。

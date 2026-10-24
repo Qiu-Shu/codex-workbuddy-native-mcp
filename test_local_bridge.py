@@ -76,6 +76,9 @@ class PermissionsTest(unittest.TestCase):
 
 class NativeSessionTest(unittest.TestCase):
     def setUp(self):
+        desktop = patch.object(local_bridge, 'desktop_turn_state', return_value='idle', create=True)
+        desktop.start()
+        self.addCleanup(desktop.stop)
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
         for key, filename in [('NATIVE_LOCK_PATH', 'lock'), ('ACTIVE_PATH', 'active.json'),
@@ -253,7 +256,7 @@ class NativeSessionTest(unittest.TestCase):
         self.assertFalse(local_bridge.TERMINAL_PATH.exists())
         self.assertTrue(local_bridge.ACTIVE_PATH.exists())
 
-    def test_explicit_take_writer_is_passed_to_native_load(self):
+    def test_legacy_take_writer_binding_does_not_enable_takeover(self):
         import json
         (local_bridge.ROOT / 'desktop_session.json').write_text(json.dumps({
             'model': 'auto', 'take_writer': True}))
@@ -267,8 +270,7 @@ class NativeSessionTest(unittest.TestCase):
                                            'one task', Path.cwd(), 30)
         self.assertEqual(result['state'], 'completed', result)
         client.request.assert_called_once_with('session/load', {
-            'sessionId': 'native-id', 'cwd': 'D:/native', 'mcpServers': [],
-            '_meta': {'codebuddy.ai/takeWriter': True}}, timeout_seconds=30)
+            'sessionId': 'native-id', 'cwd': 'D:/native', 'mcpServers': []}, timeout_seconds=30)
         client.prompt.assert_called_once()
 
 

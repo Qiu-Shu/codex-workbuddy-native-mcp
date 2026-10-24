@@ -6,6 +6,8 @@ import hashlib
 import json
 import msvcrt
 import os
+import socket
+import native_runtime
 import sys
 import threading
 import uuid
@@ -13,7 +15,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent
-BRIDGE_REVISION = '2026-10-24-route-status-v5'
+BRIDGE_REVISION = '2026-10-24-merged-guards-v6'
 SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 sys.path.insert(0, str(ROOT / 'vendor' / 'desktop-bridge'))
 sys.path.insert(0, str(ROOT / 'vendor' / 'live-bridge'))
@@ -32,7 +34,8 @@ mcp = FastMCP('workbuddy', instructions=(
     'Use workbuddy_models(cwd=...) for an independent model catalog, then pass model_id to background_start; '
     'the bridge verifies it before sending the prompt. Never rely on the model describing its own identity. '
     'The legacy workbuddy_start uses one dedicated native chat with shared history. Do not use that chat manually '
-    'while a delegated task runs. Never retry a failed or timed-out task automatically. '
+    'while a delegated task runs. Shared chat requires desktop idle; writer takeover is never used. '
+    'Never retry a failed or timed-out task automatically. '
     'Use absolute file paths. No desktop typing is needed.'), log_level='WARNING')
 # ponytail: one dedicated native chat, serialized across MCP processes with an OS file lock.
 pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -41,6 +44,10 @@ lock = threading.Lock()
 NATIVE_LOCK_PATH = ROOT / 'work/native-session.lock'
 ACTIVE_PATH = ROOT / 'work/native-active.json'
 TERMINAL_PATH = ROOT / 'work/native-terminal.json'
+
+
+class NativeRuntimeDormant(RuntimeError):
+    pass
 
 
 class BridgeUpdateRequired(RuntimeError):
@@ -143,20 +150,61 @@ def native_turn_state(native_cwd, sid):
     return state
 
 
+def parse_desktop_turn(lines):
+    """The desktop can be working before its prompt reaches the transcript."""
+    state = 'unknown'
+    for line in lines:
+        head, separator, body = line.partition(' {')
+        if not separator:
+            continue
+        try:
+            data = json.loads('{' + body)
+        except ValueError:
+            continue
+        if head.endswith(' method:sendPrompt'):
+            state = 'busy'
+        elif head.endswith(' state-machine:transition'):
+            state = 'idle' if data.get('to') == 'idle' else 'busy'
+        elif state == 'unknown' and head.endswith(' method:requests:result'):
+            states = data.get('states')
+            if isinstance(states, dict):
+                terminal = {'completed', 'cancelled', 'error', 'failed'}
+                state = 'busy' if any(count for key, count in states.items() if key not in terminal) else 'idle'
+    return state
+
+
+def desktop_turn_state(sid):
+    sid = str(uuid.UUID(sid))
+    root = Path.home() / '.workbuddy/logs'
+    paths = list(root.glob('????-??-??/sdk/conversations/' + sid + '.log'))
+    if not paths:
+        return 'unknown'
+    path = max(paths, key=lambda item: item.stat().st_mtime_ns)
+    with path.open('rb') as handle:
+        offset = max(0, path.stat().st_size - 256 * 1024)
+        handle.seek(offset)
+        if offset:
+            handle.readline()
+        lines = handle.read().splitlines(keepends=True)
+    return parse_desktop_turn(line.decode('utf-8', errors='replace').rstrip()
+                              for line in lines if line.endswith(b'\n'))
+
+
+def require_desktop_idle(sid):
+    state = desktop_turn_state(sid)
+    if state != 'idle':
+        raise RuntimeError('Dedicated desktop chat is ' + state +
+                           '; wait for the window to finish before submitting. No task sent.')
+
+
 def discover_native_server(activate=False):
     ensure_current_revision()
     binding = ROOT / 'desktop_session.json'
     if not binding.is_file():
         raise RuntimeError('Not configured: run setup.ps1 and bind an existing native chat on this computer')
     sid = str(uuid.UUID(json.loads(binding.read_text(encoding='utf-8'))['session_id']))
-    found = live.find_live_endpoint(session_id=sid)
-    if not found:
-        raise RuntimeError('Dedicated native chat has no live endpoint. Keep WorkBuddy running; '
-                           'after choosing the model, leave and reopen this chat, then click its input box '
-                           '(no message needed). Opening the chat alone may not start its worker: ' + sid)
-    port, actual_sid, native_cwd = found
-    if actual_sid != sid or not native_cwd:
-        raise RuntimeError('Native endpoint identity mismatch')
+    # Discovery/status must not allocate a competing ACP connection.
+    native_cwd = native_runtime.session_cwd(sid)
     state = native_turn_state(native_cwd, sid)
     if state['state'] != 'idle':
         raise RuntimeError('Dedicated native chat is busy or its state is unknown: ' + state['state'])
@@ -164,7 +212,30 @@ def discover_native_server(activate=False):
         active = json.loads(ACTIVE_PATH.read_text(encoding='utf-8'))
         if active['session_id'] != sid or not state['user_text'].startswith('[' + active['task_id'] + ']'):
             raise RuntimeError('Previous submission outcome is uncertain; inspect native chat before retrying')
-    return DesktopServer(f'http://127.0.0.1:{port}/api/v1/acp', '', sid, '', 0), sid, native_cwd
+    owned = native_runtime.owned_endpoints(sid)
+    candidates = {}
+    for record in live.list_interactive_sessions(probe=False):
+        if record.get('sessionId') != sid or not record.get('port'):
+            continue
+        endpoint = f"http://127.0.0.1:{record['port']}/api/v1/acp"
+        if endpoint in owned:
+            continue
+        if not record.get('cwd') or Path(record['cwd']).resolve() != Path(native_cwd).resolve():
+            raise RuntimeError('Native endpoint working directory mismatch')
+        candidates[endpoint] = record
+    if not candidates:
+        raise NativeRuntimeDormant(
+            'No desktop runtime is connected. Open the bound WorkBuddy chat and click its input box '
+            'without typing or sending a message; keep that chat open, then check status again. '
+            'Opening the window or a deep link alone is insufficient on WorkBuddy 5.8.3. '
+            'Automatic recovery is unavailable; no task sent.')
+    if len(candidates) != 1:
+        raise RuntimeError('Native desktop runtime is ambiguous; no task submitted')
+    endpoint = next(iter(candidates))
+    require_desktop_idle(sid)
+    with socket.create_connection(('127.0.0.1', urlsplit(endpoint).port), timeout=3):
+        pass
+    return DesktopServer(endpoint, '', sid, '', 0), sid, native_cwd
 
 
 @contextlib.contextmanager
@@ -257,9 +328,20 @@ def run_task(task, prompt, cwd, timeout_seconds):
     task.setdefault('control_lock', threading.Lock())
     try:
         with native_session_lock():
-            return _run_native_task(task, prompt, cwd, timeout_seconds)
+            result = _run_native_task(task, prompt, cwd, timeout_seconds)
+            if task.get('cleanup_error'):
+                result['connection_cleanup_error'] = task['cleanup_error']
+            return result
     except Exception as exc:
         return {'state': 'failed', 'error': str(exc)}
+
+
+def load_native_writer(client, sid, native_cwd):
+    require_desktop_idle(sid)
+    params = {'sessionId': sid, 'cwd': native_cwd, 'mcpServers': []}
+    # takeWriter closes the desktop's notification stream. A conflict must stop
+    # before prompt submission, even when the transcript looks idle.
+    return client.request('session/load', params, timeout_seconds=30)
 
 
 def _run_native_task(task, prompt, cwd, timeout_seconds):
@@ -274,11 +356,7 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
         task['client'] = client
         client.connect()
         config = json.loads((ROOT / 'desktop_session.json').read_text(encoding='utf-8'))
-        # Explicitly opt into WorkBuddy's native writer handoff for a dedicated idle chat.
-        load_params = {'sessionId': sid, 'cwd': native_cwd, 'mcpServers': []}
-        if config.get('take_writer') is True:
-            load_params['_meta'] = {'codebuddy.ai/takeWriter': True}
-        client.request('session/load', load_params, timeout_seconds=30)
+        load_native_writer(client, sid, native_cwd)
         client.session_id = sid
         client.configure_session(permission_mode='default', model=config.get('model', ''))
         task['session_id'] = client.session_id
@@ -299,6 +377,7 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
         with task['control_lock']:
             if task['cancel'].is_set():
                 return {'state': 'cancelled'}
+            require_desktop_idle(sid)
             TERMINAL_PATH.unlink(missing_ok=True)
             _write_state(ACTIVE_PATH, {'task_id': task['task_id'], 'session_id': sid})
             prompt_started = True
@@ -334,7 +413,10 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
         with task['control_lock']:
             task['client'] = None
             if client:
-                client.close()
+                try:
+                    client.close()
+                except Exception as exc:
+                    task['cleanup_error'] = str(exc)
 
 
 @mcp.tool()
@@ -368,6 +450,9 @@ async def workbuddy_status() -> dict:
     except Exception as exc:
         shared = {'connected': False, 'error': str(exc),
                 'error_code': 'bridge_update_required' if isinstance(exc, BridgeUpdateRequired) else 'native_unavailable'}
+        if isinstance(exc, NativeRuntimeDormant):
+            shared.update(can_attempt_recovery=False, requires_input_focus=True,
+                          recovery_action='click_bound_chat_input_without_sending')
     return {**runtime, **shared, 'connected_scope': 'shared_session_only',
             'available': background['ready'] or shared['connected'],
             'shared_session': shared, 'background': background,

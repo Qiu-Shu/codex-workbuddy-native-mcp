@@ -47,6 +47,7 @@ class CatalogTest(unittest.TestCase):
             self.client.request.side_effect = load
             return self.client
         for name, replacement in [
+            ('desktop_turn_state', lambda sid: 'idle'),
             ('native_session_lock', session_lock),
             ('discover_native_server', lambda: ('server', 'sid', 'native-cwd'))]:
             p = patch.object(self.catalog.bridge, name, replacement)

@@ -44,6 +44,7 @@ class ModelSelectionTest(unittest.TestCase):
             finally:
                 self.active_lock = False
         replacements = [
+            patch.object(catalog.bridge, 'desktop_turn_state', return_value='idle', create=True),
             patch.object(catalog.bridge, 'ROOT', self.root),
             patch.object(catalog.bridge, 'native_session_lock', session_lock),
             patch.object(catalog.bridge, 'discover_native_server', return_value=('server', 'sid', 'native-cwd')),
@@ -63,7 +64,7 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertEqual(result['current_model_id'], 'new')
         self.assertTrue(result['verified_after_reconnect'])
         self.assertEqual([name for name, _ in self.calls], ['session/load', 'session/set_model'])
-        self.assertEqual(self.calls[0][1]['_meta'], {'codebuddy.ai/takeWriter': True})
+        self.assertNotIn('_meta', self.calls[0][1])
         self.assertNotIn('_meta', self.reader.request.call_args.args[1])
         self.writer.close.assert_called_once()
         self.reader.close.assert_called_once()
@@ -132,6 +133,21 @@ class ModelSelectionTest(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertFalse(result['change_may_have_applied'])
         self.writer.connect.assert_not_called()
+
+    def test_desktop_becomes_busy_after_load_blocks_model_change(self):
+        with patch.object(catalog.bridge, 'desktop_turn_state', side_effect=['idle', 'busy'], create=True):
+            result = self.run_change()
+        self.assertFalse(result['ok'])
+        self.assertFalse(result['change_may_have_applied'])
+        self.assertEqual([method for method, _ in self.calls], ['session/load'])
+
+    def test_writer_conflict_is_never_taken_over_even_with_old_binding(self):
+        self.writer.request.side_effect = RuntimeError('writer occupied')
+        result = self.run_change()
+        self.assertFalse(result['ok'])
+        self.assertFalse(result['change_may_have_applied'])
+        self.writer.request.assert_called_once()
+        self.assertNotIn('_meta', self.writer.request.call_args.args[1])
 
     def test_bad_arguments_never_connect(self):
         for model, expected in [('', 'old'), ('new', ''), ('x\n', 'old'), ('x' * 201, 'old')]:

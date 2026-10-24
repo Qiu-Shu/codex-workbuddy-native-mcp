@@ -361,12 +361,11 @@ class AcpClient:
         self._send_lock = threading.Lock()
 
     def close(self) -> None:
-        if self.connection_id:
-            try:
-                self._http.delete(self.server.acp_endpoint, headers=self._headers(), timeout=5.0)
-            except Exception:
-                pass
-        self._http.close()
+        try:
+            if self.connection_id:
+                self._http.delete(self.server.acp_endpoint, headers=self._headers(), timeout=5.0).raise_for_status()
+        finally:
+            self._http.close()
 
     def _headers(self) -> dict[str, str]:
         headers = {
