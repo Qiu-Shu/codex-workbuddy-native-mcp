@@ -390,17 +390,25 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
             'or delegate to other agents. If a required operation is denied, report it and stop.\n\n' + prompt,
             event_callback=collect)
         stop = response['result'].get('stopReason')
-        if record_terminal_turn(native_cwd, sid, task['task_id'], stop):
-            ACTIVE_PATH.unlink(missing_ok=True)
         error = None
         if stop not in ('end_turn', 'cancelled'):
             try:
                 error = native_turn_state(native_cwd, sid)['error']
             except OSError:
                 pass
-        return {'state': 'completed' if stop == 'end_turn' else 'cancelled' if stop == 'cancelled' else 'failed',
-                'session_id': client.session_id, 'answer': response['answer'],
-                'stop_reason': stop, 'error': error, 'permissions': client.permissions, 'tool_events': events}
+        result = {'state': 'completed' if stop == 'end_turn' else 'cancelled' if stop == 'cancelled' else 'failed',
+                  'session_id': client.session_id, 'answer': response['answer'],
+                  'stop_reason': stop, 'error': error, 'permissions': client.permissions,
+                  'tool_events': events, 'retry_safe': False}
+        try:
+            saved = record_terminal_turn(native_cwd, sid, task['task_id'], stop)
+            if saved:
+                ACTIVE_PATH.unlink(missing_ok=True)
+            result.update(terminal_receipt_saved=saved, requires_recovery=not saved)
+        except Exception as exc:
+            # A confirmed response survives local bookkeeping failure. Keep the active marker.
+            result.update(requires_recovery=True, terminal_bookkeeping_error=type(exc).__name__)
+        return result
     except Exception as exc:
         if prompt_started and client and client.session_id:
             try:

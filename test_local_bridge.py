@@ -222,6 +222,50 @@ class NativeSessionTest(unittest.TestCase):
         self.assertFalse(result['connected'])
         self.assertIn('Another MCP process', result['error'])
 
+    def test_terminal_bookkeeping_failure_preserves_confirmed_response(self):
+        for failure in (RuntimeError('history changed during snapshot'), OSError('receipt write failed')):
+            for stop, state in [('end_turn', 'completed'), ('cancelled', 'cancelled')]:
+                with self.subTest(failure=failure, stop=stop):
+                    client = MagicMock()
+                    client.permissions = []
+                    client.prompt.return_value = {'result': {'stopReason': stop}, 'answer': 'confirmed answer'}
+                    with (patch.object(local_bridge, 'discover_native_server',
+                                       return_value=('server', 'sid', self.folder.name)),
+                          patch.object(local_bridge, 'ScopedClient', return_value=client),
+                          patch.object(local_bridge, 'record_terminal_turn', side_effect=failure)):
+                        result = local_bridge.run_task({'cancel': threading.Event(), 'task_id': 'wb-test'},
+                                                       'one task', Path(self.folder.name), 30)
+                    self.assertEqual(result['state'], state)
+                    self.assertEqual(result['answer'], 'confirmed answer')
+                    self.assertEqual(result['stop_reason'], stop)
+                    self.assertTrue(result['requires_recovery'])
+                    self.assertTrue(result['terminal_bookkeeping_error'])
+                    self.assertTrue(local_bridge.ACTIVE_PATH.exists())
+                    client.prompt.assert_called_once()
+                    client.notify.assert_not_called()
+
+    def test_active_marker_cleanup_failure_preserves_confirmed_response(self):
+        client = MagicMock()
+        client.permissions = []
+        client.prompt.return_value = {'result': {'stopReason': 'end_turn'}, 'answer': 'done'}
+        unlink = Path.unlink
+        def fail_active(path, *args, **kwargs):
+            if path == local_bridge.ACTIVE_PATH:
+                raise OSError('active marker is locked')
+            return unlink(path, *args, **kwargs)
+        with (patch.object(local_bridge, 'discover_native_server',
+                           return_value=('server', 'sid', self.folder.name)),
+              patch.object(local_bridge, 'ScopedClient', return_value=client),
+              patch.object(local_bridge, 'record_terminal_turn', return_value=True),
+              patch.object(Path, 'unlink', autospec=True, side_effect=fail_active)):
+            result = local_bridge.run_task({'cancel': threading.Event(), 'task_id': 'wb-test'},
+                                           'one task', Path(self.folder.name), 30)
+        self.assertEqual(result['state'], 'completed')
+        self.assertEqual(result['answer'], 'done')
+        self.assertTrue(result['requires_recovery'])
+        self.assertTrue(local_bridge.ACTIVE_PATH.exists())
+        client.notify.assert_not_called()
+
     def test_loads_bound_native_session_before_one_prompt(self):
         client = MagicMock()
         client.prompt.return_value = {'result': {'stopReason': 'end_turn'}, 'answer': 'ok'}

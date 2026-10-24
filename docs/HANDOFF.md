@@ -28,7 +28,7 @@
 | 取消终态 | 保留终态回执和 SSE 结束修复，不把取消通知当作完成 |
 | 技能/模型/后台 | 保留 11 工具、独立目录、模型核验与后台会话 |
 
-`native_runtime.py` 与 `test_desktop_busy.py`、`test_runtime.py`、`test_visibility.py`、`test_writer.py` 已恢复。共享发现路径不调用旧的创建 worker 方法；后台自动启动仍只走独立会话生命周期。模型切换在发送变更前再次检查桌面空闲。
+`native_runtime.py` 与 `test_desktop_busy.py`、`test_runtime.py`、`test_visibility.py`、`test_writer.py` 已恢复。共享发现路径不调用旧的创建 worker 方法；后台自动启动仍只走独立会话生命周期。模型切换在发送变更前再次检查桌面空闲。审查还修复了回执收尾异常丢失已确认回复的问题；保留回复并报告恢复需求，禁止自动重发。
 
 ## 下一步顺序
 
