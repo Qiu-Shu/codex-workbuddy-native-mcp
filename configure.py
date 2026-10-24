@@ -1,5 +1,6 @@
 """Bind one existing local WorkBuddy chat and optionally register the stdio MCP."""
 import argparse
+from contextlib import closing
 from datetime import datetime
 import json
 import os
@@ -20,7 +21,7 @@ def register_mcp(config_path, root, executable):
         raise ValueError('mcp_servers.workbuddy already exists; review it manually before replacing it')
     quote = lambda value: json.dumps(str(value), ensure_ascii=False)
     addition = ('\n[mcp_servers.workbuddy]\ncommand = ' + quote(Path(executable).resolve())
-                + '\nargs = [' + quote(Path(root).resolve() / 'local_bridge.py') + ']\n'
+                + '\nargs = [' + quote(Path(root).resolve() / 'catalog_mcp.py') + ']\n'
                 + 'env = { PYTHONIOENCODING = "utf-8" }\n')
     tomllib.loads(original + addition)
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -40,17 +41,27 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--list', action='store_true', help='List 30 recent native chat IDs/titles; no message bodies')
     mode.add_argument('--session-id', help='UUID of an existing chat on THIS computer')
-    parser.add_argument('--model', default='auto')
+    mode.add_argument('--background', action='store_true', help='Independent sessions; no dedicated desktop chat required')
+    parser.add_argument('--model', default='', help='Optional model override; default keeps the WorkBuddy selection')
     parser.add_argument('--register', action='store_true', help='Append global Codex MCP config, backing up any existing config')
     args = parser.parse_args()
     if sys.platform != 'win32':
         parser.error('This release supports Windows only')
     if args.list and args.register:
         parser.error('--register requires --session-id')
+    if args.background:
+        if args.model:
+            parser.error('--background does not use desktop model or writer binding options')
+        if args.register:
+            codex_dir = Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex')
+            backup = register_mcp(codex_dir / 'config.toml', ROOT, sys.executable)
+            print('Registered global MCP workbuddy.' + (f' Backup: {backup}' if backup else ''))
+        print('Independent mode ready. Reload Codex MCP; WorkBuddy must be running and signed in.')
+        return
     database = Path.home() / '.workbuddy/workbuddy.db'
     if not database.is_file():
         parser.error('WorkBuddy database missing. Install and sign in to WorkBuddy first.')
-    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
+    with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True)) as db:
         if args.list:
             rows = db.execute('SELECT id,COALESCE(custom_title,title),cwd FROM sessions '
                               'WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 30').fetchall()

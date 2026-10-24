@@ -8,3 +8,5 @@ desktop_session.backup.json
 *.bak
 .env
 .env.*
+*.log
+*.zip

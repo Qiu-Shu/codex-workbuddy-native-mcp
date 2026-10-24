@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import sys
+from unittest.mock import Mock
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'vendor' / 'desktop-bridge'))
 import httpx
@@ -12,6 +13,20 @@ from workbuddy_bridge.acp import AcpClient, DesktopServer, _candidate_sidecars
 
 
 class CompatibilityTest(unittest.TestCase):
+    def test_request_returns_on_matching_result_without_waiting_for_stream_close(self):
+        client = AcpClient(DesktopServer('http://localhost/api/v1/acp', '', '', '', 0))
+        response = Mock()
+        def events(_response):
+            yield {'jsonrpc': '2.0', 'id': 1, 'result': {'stopReason': 'cancelled'}}
+            raise AssertionError('A valid terminal result must not wait for another SSE event or EOF')
+        with (patch.object(client._http, 'stream') as stream,
+              patch('workbuddy_bridge.acp._iter_sse_json', side_effect=events)):
+            stream.return_value.__enter__.return_value = response
+            try:
+                self.assertEqual(client.request('session/prompt', {}), {'stopReason': 'cancelled'})
+            finally:
+                client.close()
+
     def test_cleanup_request_has_a_finite_timeout(self):
         requests = []
         def handle(request):

@@ -536,6 +536,7 @@ class AcpClient:
                             raise WorkBuddyError(error.get("message", str(error)))
                         result = event.get("result")
                         result_found = True
+                        break
                     elif event.get("id") is not None and event.get("method") == "session/request_permission":
                         self._grant_permission(event)
                     if time.monotonic() > deadline:
