@@ -8,13 +8,15 @@ import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import local_bridge
+import background_runtime
 
 from local_bridge import permitted, tasks, workbuddy_wait
 
 
 class LifecycleTest(unittest.IsolatedAsyncioTestCase):
     async def test_status_identifies_loaded_revision_even_when_busy(self):
-        with patch.object(local_bridge, 'discover_native_server', side_effect=RuntimeError('busy')):
+        with patch.object(local_bridge, 'discover_native_server', side_effect=RuntimeError('busy')), \
+             patch.object(background_runtime, 'find_sidecar', side_effect=RuntimeError('offline')):
             result = await local_bridge.workbuddy_status()
         self.assertFalse(result['connected'])
         self.assertTrue(result.get('bridge_revision'))

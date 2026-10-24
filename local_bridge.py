@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent
-BRIDGE_REVISION = '2026-10-20-prompt-stop-v4'
+BRIDGE_REVISION = '2026-10-24-route-status-v5'
 SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 sys.path.insert(0, str(ROOT / 'vendor' / 'desktop-bridge'))
 sys.path.insert(0, str(ROOT / 'vendor' / 'live-bridge'))
@@ -27,7 +27,11 @@ mcp = FastMCP('workbuddy', instructions=(
     'Use start then wait. Web search/fetch and file Read/Write/Edit approvals within cwd are supported. '
     'Other permission requests are denied and reported. This is not an OS sandbox. '
     'Verify outputs independently. WorkBuddy must be running and logged in. '
-    'Tasks use one dedicated native chat with persistent shared history. Do not use that chat manually '
+    'Prefer workbuddy_background_start for automatic independent conversations, with saved history in Codex. '
+    'A disconnected shared chat does not block background tasks. Check status.available and background.ready. '
+    'Use workbuddy_models(cwd=...) for an independent model catalog, then pass model_id to background_start; '
+    'the bridge verifies it before sending the prompt. Never rely on the model describing its own identity. '
+    'The legacy workbuddy_start uses one dedicated native chat with shared history. Do not use that chat manually '
     'while a delegated task runs. Never retry a failed or timed-out task automatically. '
     'Use absolute file paths. No desktop typing is needed.'), log_level='WARNING')
 # ponytail: one dedicated native chat, serialized across MCP processes with an OS file lock.
@@ -335,20 +339,41 @@ def _run_native_task(task, prompt, cwd, timeout_seconds):
 
 @mcp.tool()
 async def workbuddy_status() -> dict:
-    """Check connection to the running local WorkBuddy desktop, without exposing credentials."""
+    """Report shared-chat and independent-background readiness separately. connected is shared-only.
+
+    Use available/background.ready for automatic tasks; a missing shared endpoint does not block them.
+    Background readiness checks the native sidecar, not model inference or account quota.
+    """
     runtime = {'bridge_revision': BRIDGE_REVISION, 'process_id': os.getpid(), 'source_sha256': SOURCE_SHA256}
     try:
         ensure_current_revision()
+    except BridgeUpdateRequired as exc:
+        return {**runtime, 'available': False, 'connected': False,
+                'error_code': 'bridge_update_required', 'error': str(exc)}
+    import background_runtime
+    try:
+        await asyncio.to_thread(background_runtime.find_sidecar)
+        background = {'ready': True, 'check': 'native_sidecar', 'model_inference_verified': False}
+    except Exception as exc:
+        background = {'ready': False, 'error_type': type(exc).__name__,
+                      'error': 'No usable native sidecar. Keep WorkBuddy running and logged in.'}
+    try:
         def probe():
             with native_session_lock():
                 return discover_native_server()
         server, sid, native_cwd = await asyncio.to_thread(probe)
-        return {**runtime, 'connected': True, 'endpoint': server.acp_endpoint, 'concurrency': 1,
+        shared = {'connected': True, 'endpoint': server.acp_endpoint, 'concurrency': 1,
                 'session_id': sid, 'native_history': True, 'native_cwd': native_cwd,
                 'permissions': 'default mode; scoped allow_once responses; not an OS sandbox'}
     except Exception as exc:
-        return {**runtime, 'connected': False, 'error': str(exc),
+        shared = {'connected': False, 'error': str(exc),
                 'error_code': 'bridge_update_required' if isinstance(exc, BridgeUpdateRequired) else 'native_unavailable'}
+    return {**runtime, **shared, 'connected_scope': 'shared_session_only',
+            'available': background['ready'] or shared['connected'],
+            'shared_session': shared, 'background': background,
+            'recommended_tool': 'workbuddy_background_start' if background['ready'] else
+                                'workbuddy_start' if shared['connected'] else None,
+            'guidance': 'Use the independent background route when ready; it does not require an open shared chat.'}
 
 
 @mcp.tool()

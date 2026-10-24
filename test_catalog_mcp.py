@@ -10,6 +10,10 @@ class CatalogTest(unittest.TestCase):
     def setUp(self):
         self.assertIsNotNone(importlib.util.find_spec('catalog_mcp'), 'read-only catalog entrypoint is missing')
         self.catalog = importlib.import_module('catalog_mcp')
+        fallback = patch.object(self.catalog, 'read_background_catalog', return_value={
+            'ok': False, 'error_code': 'catalog_unavailable'})
+        fallback.start()
+        self.addCleanup(fallback.stop)
         self.client = MagicMock()
         self.client.request.return_value = {'models': {
             'currentModelId': 'model-1', 'apiKey': 'DO_NOT_RETURN',

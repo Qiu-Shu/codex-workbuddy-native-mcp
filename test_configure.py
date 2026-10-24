@@ -13,6 +13,17 @@ from configure import register_mcp
 
 
 class RegisterTest(unittest.TestCase):
+    def test_background_registration_needs_no_desktop_binding_or_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (patch.object(configure, 'ROOT', root),
+                  patch.dict(configure.os.environ, {'CODEX_HOME': str(root/'codex')}),
+                  patch.object(sys, 'argv', ['configure.py', '--background', '--register']),
+                  contextlib.redirect_stdout(io.StringIO())):
+                configure.main()
+            self.assertTrue((root/'codex/config.toml').is_file())
+            self.assertFalse((root/'desktop_session.json').exists())
+
     def test_default_binding_preserves_workbuddy_selected_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
