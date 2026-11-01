@@ -110,7 +110,8 @@ def owned_worker(cwd, on_created=None, model_id=''):
     params = {
         'sessionId': owner, 'command': str(executable),
         'args': [str(cli), '--serve', '--setting-sources', 'user', '--permission-mode', 'default',
-                 '--permission-mode-before-plan', 'default', '--strict-mcp-config'],
+                 '--permission-mode-before-plan', 'default', '--strict-mcp-config',
+                 '--tools', 'Read,Write,Edit,WebSearch,WebFetch'],
         'cwd': str(cwd), 'port': 0, 'cols': 80, 'rows': 24,
         'env': {'ELECTRON_RUN_AS_NODE': '1', 'CODEBUDDY_FORCE_LITE_WB_BUNDLE': '1',
                 'CODEBUDDY_FORCE_HEADLESS_BUNDLE': '1', 'CODEBUDDY_DISABLE_IDE': '1',

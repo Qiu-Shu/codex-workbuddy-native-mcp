@@ -12,7 +12,7 @@ import uuid
 import local_bridge as bridge
 from background_runtime import owned_worker, stop_owned, validate_model_id
 
-BACKGROUND_REVISION = '2026-10-24-verified-model-v2'
+BACKGROUND_REVISION = '2026-11-01-scoped-tools-v3'
 CANCEL_GRACE_SECONDS = 8
 STORE = Path.home() / '.codex/workbuddy-background'
 POOL = ThreadPoolExecutor(max_workers=2)
@@ -293,6 +293,8 @@ def register(mcp):
         Use workbuddy_wait/cancel with task_id. Worker automatically releases after each turn.
         Persistent history is available in Codex; it is NOT in the WorkBuddy desktop chat list.
         Same scoped file/web permissions as workbuddy_start. Never automatically retry uncertain tasks.
+        Workers expose only Read/Write/Edit/WebSearch/WebFetch. Provide exact file paths; Codex handles
+        directory searches, commands and test execution. Report unsupported steps instead of requesting Bash.
         """
         return background_start(prompt, cwd, session_id, timeout_seconds, model_id)
 
