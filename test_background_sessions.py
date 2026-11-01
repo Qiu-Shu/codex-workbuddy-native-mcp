@@ -46,6 +46,11 @@ class BackgroundRuntimeTests(unittest.TestCase):
                     raise RuntimeError('body failure')
         params = calls[0][1]
         self.assertEqual(params['port'], 0)
+        self.assertIn('--tools', params['args'], 'Unrestricted tools can cancel an otherwise permitted file task')
+        tools = set(params['args'][params['args'].index('--tools') + 1].split(','))
+        self.assertEqual(tools, {'Read', 'Write', 'Edit', 'WebSearch', 'WebFetch'})
+        self.assertEqual(params['args'][params['args'].index('--permission-mode') + 1], 'default')
+        self.assertIn('--strict-mcp-config', params['args'])
         self.assertNotIn('--no-session-persistence', params['args'])
         self.assertNotIn('DISABLE_REQUEST_VALIDATION', params['env'])
         self.assertEqual(calls[-1][0], 'session.kill')

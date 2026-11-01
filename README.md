@@ -10,9 +10,11 @@ Codex → stdio MCP → WorkBuddy Sidecar 正常启动 → 独立 ACP 会话 →
 
 本版本包含独立后台会话、跨对话状态、独立目录和模型核验，并已整合 v0.1.4 的桌面忙碌检测、端点选择与禁止抢占写入权保护。实现和验收边界见 [独立会话说明](docs/INDEPENDENT-SESSIONS.md)。这是社区适配，使用客户端内部接口，不是官方稳定 API。
 
-## 当前状态：2026-10-24
+## 当前状态：2026-11-01
 
 核心版本为 `2026-10-24-merged-guards-v6`，目录版本为 `2026-10-24-guarded-catalog-v4`。此前 v5 已通过当前 Codex 宿主的 Kimi 短文本调用，以及独立目录、跨 MCP 进程续聊验收；本次合并验证与未测范围见 [验证记录](docs/VALIDATION.md)。GitHub 更新不会自动替换本机安装或已加载的工具进程。
+
+后台版本 `2026-11-01-scoped-tools-v3` 修复文件任务误用命令工具后被取消的问题：每轮启动仅向 WorkBuddy 提供 Read / Write / Edit / WebSearch / WebFetch。WorkBuddy 5.9.3 上新建与续聊均完成文件任务；Codex 负责目录搜索和运行测试。用 `workbuddy_background_sessions` 的 `revision` 核对后台版本，核心仍为 v6。
 
 **状态中的 `connected=false` 只代表旧共享聊天断开。** 后台协作看 `background.ready`；为 true 时可直接使用 `workbuddy_background_start`，不需要手动点击 WorkBuddy 输入框。Sidecar 就绪不等于额度充足或模型推理成功，实际任务仍须检查终态。
 
@@ -35,7 +37,7 @@ Codex → stdio MCP → WorkBuddy Sidecar 正常启动 → 独立 ACP 会话 →
 | 查询可用模型、当前模型 | 已实现，读取当前会话实际返回的目录 |
 | 搜索技能 | 已实现，搜索当前会话上报的技能名称和描述，包含内置技能 |
 | 选择已有模型 | 已实现，检查当前值，切换后重新连接并读回确认 |
-| 文件与联网任务 | 支持目录内 Read / Write / Edit 和 WebSearch / WebFetch 的权限请求；本快照未重新验收完整文件及联网流程 |
+| 文件与联网任务 | 支持目录内 Read / Write / Edit 和 WebSearch / WebFetch；5.9.3 已实测后台读、改、写及续聊，联网流程未重新验收 |
 | 技能市场搜索、安装、启停 | 未实现 |
 | 添加模型提供商或配置 API 密钥 | 未实现 |
 | 自动新建、唤醒后台独立会话 | 已实现并实测创建、隔离、跨 worker 和桥接进程续聊 |
@@ -46,7 +48,7 @@ Codex → stdio MCP → WorkBuddy Sidecar 正常启动 → 独立 ACP 会话 →
 
 ## 安装：推荐后台独立模式
 
-需要 Windows、Python 3.11+、支持 stdio MCP 的 Codex，以及已安装、已登录的 WorkBuddy。实测环境为 Windows、Python 3.14、WorkBuddy 5.8.3；其他版本需要单独确认。首次安装依赖需要联网。
+需要 Windows、Python 3.11+、支持 stdio MCP 的 Codex，以及已安装、已登录的 WorkBuddy。实测环境为 Windows、Python 3.14、WorkBuddy 5.8.3；本次后台工具限制另在 5.9.3 验收，其他版本需要单独确认。首次安装依赖需要联网。
 
 下载到长期保留的目录后，运行：
 
@@ -141,6 +143,7 @@ env = { PYTHONIOENCODING = "utf-8" }
 | 工具仍无 `model_id` 参数或状态没有 `background` 字段 | 已加载的旧进程尚未刷新，重载 WorkBuddy MCP；磁盘部署不等于宿主生效 |
 | 只看到 4 或 7 项工具 | 核对启动脚本为更新后的 `catalog_mcp.py`，然后重载宿主；当前共 11 项 |
 | 后台会话要求 recover | 查看保存的历史，再调用后台恢复工具；它不会重发任务 |
+| 文件任务因 Bash / 命令权限被取消 | 后台 v3 已限制可见工具；核对后台版本。委派时给出具体文件路径，目录检索和测试由 Codex 执行。先检查原任务产生的文件，不自动重试取消任务 |
 | 工具提示需要批准，但审批策略为 never | 检查当前 Codex 会话权限；只读环境可能阻止调用，恢复权限后先实际查询状态 |
 | `catalog_unavailable` | 检查连接和空闲状态；不能把未收到目录当成空目录 |
 | `model_changed` | 当前模型已变化，重新查询后决定是否切换 |
@@ -148,6 +151,8 @@ env = { PYTHONIOENCODING = "utf-8" }
 | 取消后还在运行 | 取消请求不是完成回执，继续等待终态；结果不明时核实，不反复发送 |
 
 桥接收到权限请求时，只允许任务目录内的 Read / Write / Edit 和 WebSearch / WebFetch。Grep、Glob、shell 和其他连接器请求会被拒绝。它不是操作系统沙箱，无法约束 WorkBuddy 已自行批准、未向桥接询问的行为。委派时写清目录与范围，并独立核对结果。
+
+后台 worker 通过客户端 `--tools` 参数只暴露上述五种工具，避免模型选用无法获批的命令工具。文件越界检查和拒绝后的取消收尾仍保留。该限制适用于后台新建和续聊；共享桌面聊天由 WorkBuddy 自己启动，不受这个启动参数控制。代码协作时先由 Codex 定位文件、提供上下文，再交给 WorkBuddy 修改指定文件，最后由 Codex 执行测试。
 
 原生聊天模式共享历史。委派期间不要在同一聊天手动发送消息；不同敏感项目不要混用同一历史。当前实现不能保证人工操作与桥接提交之间的原子互斥，也不保证应用重启后的自动恢复。
 
